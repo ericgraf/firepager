@@ -191,7 +191,7 @@ func sendTwilioMessage(accountSID, authToken, to, from, body string) error {
 
 	responseBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf(summarizeAPIError(responseBody))
+		return fmt.Errorf("%s", summarizeAPIError(responseBody))
 	}
 
 	return nil

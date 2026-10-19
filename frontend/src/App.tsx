@@ -1,11 +1,10 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
-import { MessageFeed } from './components/MessageFeed';
-import { Metrics } from './components/Metrics';
 import { AdminDashboard } from './components/AdminDashboard';
 import { Login } from './components/Login';
 import { Register } from './components/Register';
 import { Profile } from './components/Profile';
+import { OperatorDashboard } from './components/OperatorDashboard';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './App.css';
 
@@ -25,24 +24,8 @@ function DashboardLayout({ children }: { children: ReactNode }) {
   return (
     <div className="app-container">
       <header className="app-header">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-          <div>
-            <Link to="/" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <h1>Firepager</h1>
-            </Link>
-            <p>SDR Pager Message Dashboard</p>
-          </div>
-          <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '20px' }}>
-            <nav style={{ display: 'flex', gap: '15px', fontWeight: 600 }}>
-              <Link to="/" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Home</Link>
-              <Link to="/profile" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Profile</Link>
-            </nav>
-            <div>
-              <p style={{ margin: 0 }}>Logged in as <strong>{user?.name}</strong></p>
-              <button onClick={logout} style={{ marginTop: '8px', padding: '4px 12px', fontSize: '14px' }}>Logout</button>
-            </div>
-          </div>
-        </div>
+        <div className="topbar-brand"><Link to="/" className="brand-link"><span className="brand-mark">F</span><span><strong>firepager</strong><small>operations</small></span></Link></div>
+        <nav className="topbar-nav"><Link to="/">Operations</Link>{user?.role === 'admin' && <Link to="/admin">Admin</Link>}<Link to="/profile">Profile</Link><span className="user-chip">{user?.name || 'Operator'}</span><button type="button" className="logout-button" onClick={logout}>Sign out</button></nav>
       </header>
 
       <main className="app-main">
@@ -53,27 +36,7 @@ function DashboardLayout({ children }: { children: ReactNode }) {
 }
 
 function MainView() {
-  const [selectedVehicles, setSelectedVehicles] = useState<string[]>([]);
-
-  const toggleVehicle = (vehicle: string | null) => {
-    if (vehicle === null) {
-      setSelectedVehicles([]);
-      return;
-    }
-
-    setSelectedVehicles((current) =>
-      current.includes(vehicle)
-        ? current.filter((v) => v !== vehicle)
-        : [...current, vehicle]
-    );
-  };
-
-  return (
-    <>
-      <Metrics selectedVehicles={selectedVehicles} onToggleVehicle={toggleVehicle} />
-      <MessageFeed selectedVehicles={selectedVehicles} />
-    </>
-  );
+  return <OperatorDashboard />;
 }
 
 function App() {

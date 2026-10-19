@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/firepager/backend/db"
 	"github.com/firepager/backend/models"
@@ -92,7 +95,12 @@ func updateUserRole(c *gin.Context) {
 }
 
 func getMetrics(c *gin.Context) {
-	metrics, err := db.GetMetrics()
+	query, err := parseMetricsQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	metrics, err := db.GetMetricsFiltered(query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -101,12 +109,87 @@ func getMetrics(c *gin.Context) {
 }
 
 func getMessages(c *gin.Context) {
-	msgs, err := db.GetMessages()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	// Keep the original []Message response for existing clients that do not
+	// ask for query options. New clients get bounded keyset pagination.
+	if c.Request.URL.RawQuery == "" {
+		msgs, err := db.GetMessages()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, msgs)
 		return
 	}
-	c.JSON(http.StatusOK, msgs)
+	query, err := parseMessageQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	page, err := db.GetMessagesPage(query)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, page)
+}
+
+func parseTimeParam(c *gin.Context, name string) (*time.Time, error) {
+	value := strings.TrimSpace(c.Query(name))
+	if value == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be RFC3339", name)
+	}
+	return &t, nil
+}
+
+func parseMessageQuery(c *gin.Context) (db.MessageQuery, error) {
+	limit := 0
+	if raw := c.Query("limit"); raw != "" {
+		var err error
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 {
+			return db.MessageQuery{}, fmt.Errorf("limit must be a positive integer")
+		}
+	}
+	from, err := parseTimeParam(c, "from")
+	if err != nil {
+		return db.MessageQuery{}, err
+	}
+	to, err := parseTimeParam(c, "to")
+	if err != nil {
+		return db.MessageQuery{}, err
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return db.MessageQuery{}, fmt.Errorf("from must be before to")
+	}
+	return db.MessageQuery{
+		Limit: limit, Cursor: c.Query("cursor"), Type: c.Query("type"),
+		Source: c.Query("source"), ClientID: c.Query("client_id"),
+		Station: c.Query("station"), CallType: c.Query("call_type"),
+		Search: c.Query("q"), From: from, To: to,
+	}, nil
+}
+
+func parseMetricsQuery(c *gin.Context) (db.MetricsQuery, error) {
+	from, err := parseTimeParam(c, "from")
+	if err != nil {
+		return db.MetricsQuery{}, err
+	}
+	to, err := parseTimeParam(c, "to")
+	if err != nil {
+		return db.MetricsQuery{}, err
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return db.MetricsQuery{}, fmt.Errorf("from must be before to")
+	}
+	return db.MetricsQuery{
+		Type: c.Query("type"), ClientID: c.Query("client_id"),
+		Station: c.Query("station"), CallType: c.Query("call_type"),
+		From: from, To: to,
+	}, nil
 }
 
 func deleteMessage(c *gin.Context) {

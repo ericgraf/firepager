@@ -2,9 +2,13 @@ package db
 
 import (
 	"database/sql"
+	"encoding/base64"
+	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/firepager/backend/models"
 	"github.com/lib/pq"
@@ -57,6 +61,7 @@ func createSchema() {
 		timestamp TIMESTAMP NOT NULL,
 		source VARCHAR(50) NOT NULL,
 		text TEXT NOT NULL,
+		raw_text TEXT,
 		type VARCHAR(20),
 		page_id VARCHAR(50),
 		call_type VARCHAR(100),
@@ -145,12 +150,22 @@ func createSchema() {
 			ALTER TABLE messages DROP COLUMN vehicles;
 			ALTER TABLE messages RENAME COLUMN vehicles_new TO vehicles;
 		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='raw_text') THEN
+			ALTER TABLE messages ADD COLUMN raw_text TEXT;
+		END IF;
 	END $$;
 
 	CREATE TABLE IF NOT EXISTS system_configs (
 		key VARCHAR(100) PRIMARY KEY,
 		value TEXT NOT NULL
 	);
+	-- Query indexes for the high-volume message list and time-window metrics.
+	CREATE INDEX IF NOT EXISTS messages_timestamp_id_idx ON messages (timestamp DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS messages_type_timestamp_idx ON messages (type, timestamp DESC);
+	CREATE INDEX IF NOT EXISTS messages_client_timestamp_idx ON messages (client_id, timestamp DESC);
+	CREATE INDEX IF NOT EXISTS messages_call_type_timestamp_idx ON messages (call_type, timestamp DESC);
+	CREATE INDEX IF NOT EXISTS messages_station_timestamp_idx ON messages (station, timestamp DESC);
 	`
 	_, err := DB.Exec(schema)
 	if err != nil {
@@ -203,30 +218,108 @@ func seedAdminUser() {
 
 func SaveMessage(msg *models.Message) error {
 	query := `INSERT INTO messages (
-		id, timestamp, source, text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
 	_, err := DB.Exec(query,
-		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.Type,
+		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.RawText, msg.Type,
 		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles),
 		msg.Address, msg.Intersection, msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
 	return err
 }
 
 func GetMessages() ([]models.Message, error) {
-	query := `SELECT 
-		id, timestamp, source, text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
-		FROM messages ORDER BY timestamp DESC LIMIT 100`
-	rows, err := DB.Query(query)
+	page, err := GetMessagesPage(MessageQuery{Limit: 100})
+	if err != nil {
+		return nil, err
+	}
+	return page.Messages, nil
+}
+
+// MessageQuery describes bounded, keyset-paginated message retrieval.
+type MessageQuery struct {
+	Limit    int
+	Cursor   string
+	Type     string
+	Source   string
+	ClientID string
+	Station  string
+	CallType string
+	Search   string
+	From     *time.Time
+	To       *time.Time
+}
+
+const (
+	DefaultMessageLimit = 100
+	MaxMessageLimit     = 500
+)
+
+// GetMessagesPage uses (timestamp,id) keyset pagination. This remains stable
+// when rows are inserted while a client is walking a result set.
+func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = DefaultMessageLimit
+	}
+	if limit > MaxMessageLimit {
+		limit = MaxMessageLimit
+	}
+
+	conditions := []string{"TRUE"}
+	args := make([]interface{}, 0, 10)
+	arg := func(value interface{}) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if q.Type != "" {
+		conditions = append(conditions, "type = "+arg(q.Type))
+	}
+	if q.Source != "" {
+		conditions = append(conditions, "source = "+arg(q.Source))
+	}
+	if q.ClientID != "" {
+		conditions = append(conditions, "client_id = "+arg(q.ClientID))
+	}
+	if q.Station != "" {
+		conditions = append(conditions, "station ILIKE "+arg("%"+q.Station+"%"))
+	}
+	if q.CallType != "" {
+		conditions = append(conditions, "call_type = "+arg(q.CallType))
+	}
+	if q.Search != "" {
+		term := "%" + q.Search + "%"
+		conditions = append(conditions, "(text ILIKE "+arg(term)+" OR raw_text ILIKE "+arg(term)+" OR address ILIKE "+arg(term)+")")
+	}
+	if q.From != nil {
+		conditions = append(conditions, "timestamp >= "+arg(*q.From))
+	}
+	if q.To != nil {
+		conditions = append(conditions, "timestamp < "+arg(*q.To))
+	}
+	if q.Cursor != "" {
+		cursorTime, cursorID, err := decodeMessageCursor(q.Cursor)
+		if err != nil {
+			return nil, fmt.Errorf("invalid message cursor: %w", err)
+		}
+		conditions = append(conditions, "(timestamp, id) < ("+arg(cursorTime)+", "+arg(cursorID)+")")
+	}
+
+	args = append(args, limit+1)
+	query := `SELECT id, timestamp, source, text, COALESCE(raw_text, ''), type, page_id, call_type,
+		incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
+		FROM messages WHERE ` + strings.Join(conditions, " AND ") +
+		` ORDER BY timestamp DESC, id DESC LIMIT $` + fmt.Sprint(len(args))
+	rows, err := DB.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var msgs []models.Message
+	msgs := make([]models.Message, 0, limit)
 	for rows.Next() {
 		var m models.Message
 		if err := rows.Scan(
-			&m.ID, &m.Timestamp, &m.Source, &m.Text, &m.Type,
+			&m.ID, &m.Timestamp, &m.Source, &m.Text, &m.RawText, &m.Type,
 			&m.PageID, &m.CallType, &m.IncidentNumber, pq.Array(&m.Vehicles),
 			&m.Address, &m.Intersection, &m.Latitude, &m.Longitude, &m.ClientID, &m.Station,
 		); err != nil {
@@ -234,7 +327,33 @@ func GetMessages() ([]models.Message, error) {
 		}
 		msgs = append(msgs, m)
 	}
-	return msgs, nil
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	page := &models.MessagePage{Messages: msgs}
+	if len(msgs) > limit {
+		page.HasMore = true
+		page.Messages = msgs[:limit]
+		page.NextCursor = encodeMessageCursor(page.Messages[limit-1])
+	}
+	return page, nil
+}
+
+func encodeMessageCursor(m models.Message) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(m.Timestamp.UTC().Format(time.RFC3339Nano) + "|" + m.ID))
+}
+
+func decodeMessageCursor(cursor string) (time.Time, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return time.Time{}, "", fmt.Errorf("malformed cursor")
+	}
+	t, err := time.Parse(time.RFC3339Nano, parts[0])
+	return t, parts[1], err
 }
 
 func DeleteMessage(id string) error {
@@ -558,15 +677,56 @@ func GetInvites() ([]models.Invite, error) {
 }
 
 func GetMetrics() (*models.Metrics, error) {
-	metrics := &models.Metrics{}
+	return GetMetricsFiltered(MetricsQuery{})
+}
 
-	err := DB.QueryRow("SELECT COUNT(*) FROM messages").Scan(&metrics.TotalMessages)
+type MetricsQuery struct {
+	Type     string
+	ClientID string
+	Station  string
+	CallType string
+	From     *time.Time
+	To       *time.Time
+}
+
+// GetMetricsFiltered applies the same time and dimension filters to every
+// metric. Aggregation stays in PostgreSQL, rather than loading the message
+// table into the API process.
+func GetMetricsFiltered(q MetricsQuery) (*models.Metrics, error) {
+	metrics := &models.Metrics{}
+	conditions := []string{"TRUE"}
+	args := make([]interface{}, 0, 6)
+	add := func(value interface{}) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if q.Type != "" {
+		conditions = append(conditions, "type = "+add(q.Type))
+	}
+	if q.ClientID != "" {
+		conditions = append(conditions, "client_id = "+add(q.ClientID))
+	}
+	if q.Station != "" {
+		conditions = append(conditions, "station ILIKE "+add("%"+q.Station+"%"))
+	}
+	if q.CallType != "" {
+		conditions = append(conditions, "call_type = "+add(q.CallType))
+	}
+	if q.From != nil {
+		conditions = append(conditions, "timestamp >= "+add(*q.From))
+	}
+	if q.To != nil {
+		conditions = append(conditions, "timestamp < "+add(*q.To))
+	}
+	where := strings.Join(conditions, " AND ")
+
+	err := DB.QueryRow("SELECT COUNT(*) FROM messages WHERE "+where, args...).Scan(&metrics.TotalMessages)
 	if err != nil {
 		return nil, err
 	}
 
 	// By Type
-	rows, err := DB.Query("SELECT type, COUNT(*) FROM messages GROUP BY type")
+	rows, err := DB.Query("SELECT type, COUNT(*) FROM messages WHERE "+where+" GROUP BY type ORDER BY COUNT(*) DESC, type ASC", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +746,7 @@ func GetMetrics() (*models.Metrics, error) {
 	}
 
 	// By Client
-	rows, err = DB.Query("SELECT client_id, COUNT(*) FROM messages GROUP BY client_id")
+	rows, err = DB.Query("SELECT client_id, COUNT(*) FROM messages WHERE "+where+" GROUP BY client_id ORDER BY COUNT(*) DESC, client_id ASC", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -606,7 +766,8 @@ func GetMetrics() (*models.Metrics, error) {
 	}
 
 	// By Station (Calls only)
-	rows, err = DB.Query("SELECT station FROM messages WHERE type = 'CALL' AND station != ''")
+	stationWhere := where + " AND type = 'CALL' AND station <> ''"
+	rows, err = DB.Query("SELECT station FROM messages WHERE "+stationWhere, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -631,6 +792,12 @@ func GetMetrics() (*models.Metrics, error) {
 			Value: value,
 		})
 	}
+	sort.Slice(metrics.ByStation, func(i, j int) bool {
+		if metrics.ByStation[i].Value == metrics.ByStation[j].Value {
+			return metrics.ByStation[i].Label < metrics.ByStation[j].Label
+		}
+		return metrics.ByStation[i].Value > metrics.ByStation[j].Value
+	})
 
 	return metrics, nil
 }

@@ -21,6 +21,14 @@ type Message struct {
 	Station        string    `json:"station"`
 }
 
+// MessagePage is returned by the paginated messages endpoint. Cursor is an
+// opaque value so clients do not need to know about the database sort key.
+type MessagePage struct {
+	Messages   []Message `json:"messages"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+	HasMore    bool      `json:"has_more"`
+}
+
 type User struct {
 	ID                int      `json:"id"`
 	Email             string   `json:"email"`
