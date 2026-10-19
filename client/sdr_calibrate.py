@@ -76,10 +76,32 @@ def calibrate(stations, gain="49", runner=subprocess.run):
         })
     if not observations:
         raise ValueError("at least one station is required")
-    return {
+    result = {
         "SDR_PPM": round(statistics.median(item["ppm"] for item in observations), 2),
         "SDR_GAIN": str(gain), "stations": observations,
     }
+    validate_result(result)
+    return result
+
+
+def validate_result(result, min_stations=1, max_spread_ppm=3.0, max_abs_ppm=200.0):
+    """Reject implausible or contradictory reference measurements.
+
+    A strong but spurious FM peak must not replace a known-good correction.
+    Multiple references should agree closely; a single reference is allowed
+    for initial setup, while deployments can require two or more.
+    """
+    observations = result.get("stations", [])
+    if len(observations) < min_stations:
+        raise ValueError("not enough valid FM reference stations")
+    estimates = [float(item["ppm"]) for item in observations]
+    candidate = statistics.median(estimates)
+    if any(abs(value) > max_abs_ppm for value in estimates):
+        raise ValueError("FM reference estimate is outside the safe PPM range")
+    if any(abs(value - candidate) > max_spread_ppm for value in estimates):
+        raise ValueError("FM reference estimates disagree")
+    result["SDR_PPM"] = round(candidate, 2)
+    return result
 
 
 class CalibrationScheduler:

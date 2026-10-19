@@ -62,6 +62,20 @@ class CalibrationTests(unittest.TestCase):
         self.assertIn("-g", calls[0])
         self.assertIn("38", calls[0])
 
+    def test_rejects_disagreeing_reference_stations(self):
+        result = {"SDR_PPM": 0, "SDR_GAIN": "38", "stations": [
+            {"ppm": 2.0}, {"ppm": 9.0},
+        ]}
+        with self.assertRaises(ValueError):
+            sdr_calibrate.validate_result(result)
+
+    def test_rejects_implausible_ppm(self):
+        result = {"SDR_PPM": 0, "SDR_GAIN": "38", "stations": [
+            {"ppm": 201.0},
+        ]}
+        with self.assertRaises(ValueError):
+            sdr_calibrate.validate_result(result)
+
 
 if __name__ == "__main__":
     unittest.main()

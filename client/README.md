@@ -16,6 +16,8 @@ gain. Configure these variables in the client container:
   disables periodic calibration.
 * `SDR_CALIBRATE_JITTER` — random positive jitter in seconds added to each
   interval (default `0`).
+* `SDR_CALIBRATE_MIN_STATIONS` — minimum number of agreeing references required
+  before committing a result (default `1`; use `2` for unattended operation).
 * `SDR_CALIBRATION_FILE` — last-known-good JSON path (default
   `/var/lib/firepager/sdr-calibration.json`).
 
@@ -50,6 +52,9 @@ bounded by the scanner timeout, and the decoder is restarted immediately.
 Successful results are atomically written to the calibration file. A failed
 run keeps the previous values and exponentially backs off (up to eight base
 intervals), so a bad station does not continuously interrupt POCSAG capture.
+Reference estimates must agree within 3 ppm and remain within a 100 ppm safety
+range (200 ppm by default); set `SDR_CALIBRATE_MIN_STATIONS=2` to require
+independent references.
 If no previous file exists, the explicitly configured `SDR_PPM`/`SDR_GAIN`
 remain in effect.
 

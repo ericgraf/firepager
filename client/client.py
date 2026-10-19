@@ -22,9 +22,9 @@ from urllib.parse import urlsplit, urlunsplit
 import pika
 
 try:
-    from sdr_calibrate import CalibrationScheduler, calibrate, parse_station
+    from sdr_calibrate import CalibrationScheduler, calibrate, parse_station, validate_result
 except ImportError:  # Allows importing this module in minimal non-SDR tooling.
-    CalibrationScheduler = calibrate = parse_station = None
+    CalibrationScheduler = calibrate = parse_station = validate_result = None
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -218,6 +218,8 @@ def save_calibration(path, value):
 def perform_calibration(stations, gain, path):
     """Run one receive-only calibration and persist it only on success."""
     result = calibrate(stations, gain=gain)
+    minimum_stations = int(os.environ.get("SDR_CALIBRATE_MIN_STATIONS", "1"))
+    validate_result(result, min_stations=minimum_stations)
     save_calibration(path, result)
     return str(result["SDR_PPM"]), str(result["SDR_GAIN"])
 
