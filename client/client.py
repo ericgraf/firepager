@@ -503,6 +503,17 @@ def main():
                     if line:
                         spool.enqueue(message(client_id, line))
                         drain_spool(spool, connection, channel)
+                    # A pipeline can emit its final line while the shell
+                    # leader is already exiting. In that case the `elif`
+                    # below is skipped; still record the failure and back off
+                    # before attempting another decoder start.
+                    if process.poll() is not None:
+                        terminate_process_group(process)
+                        process = None
+                        if decoder_lock:
+                            decoder_lock.release()
+                        decoder_failures += 1
+                        decoder_retry_at = time.monotonic() + min(30, 2 ** min(decoder_failures, 5))
                 elif process.poll() is not None:
                     terminate_process_group(process)
                     process = None
