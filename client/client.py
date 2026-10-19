@@ -1,101 +1,352 @@
-import subprocess
-import pika
-import os
+"""FirePager SDR client.
+
+Messages are written to a local SQLite spool before they are sent.  A message
+is removed only after RabbitMQ publisher confirms it, so a broker restart (or
+client restart) cannot silently lose a decoded page.
+"""
+
 import json
-import time
 import logging
+import os
+import signal
+import shlex
+import select
+import sqlite3
+import subprocess
+import threading
+import time
+import tempfile
 from datetime import datetime, timezone
+from urllib.parse import urlsplit, urlunsplit
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import pika
+
+try:
+    from sdr_calibrate import CalibrationScheduler, calibrate, parse_station
+except ImportError:  # Allows importing this module in minimal non-SDR tooling.
+    CalibrationScheduler = calibrate = parse_station = None
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+QUEUE = "pager_messages"
 
-def connect_rabbitmq():
-    rabbit_url = os.environ.get('RABBITMQ_URL', 'amqp://guest:guest@firepager-rmq:5672/')
+
+def redact_url(value):
+    """Remove passwords (and credentials in exception text) from log output."""
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = urlsplit(value)
+        if parsed.password is not None:
+            host = parsed.hostname or ""
+            if parsed.port:
+                host += ":" + str(parsed.port)
+            user = parsed.username or "user"
+            return urlunsplit((parsed.scheme, f"{user}:***@{host}", parsed.path, parsed.query, parsed.fragment))
+    except ValueError:
+        pass
+    # pika's errors sometimes include the original URL without it being a URL
+    return value.replace(os.environ.get("RABBITMQ_PASSWORD", "\0"), "***") if os.environ.get("RABBITMQ_PASSWORD") else value
+
+
+def safe_error(exc):
+    text = redact_url(str(exc))
+    configured = os.environ.get("RABBITMQ_URL", "")
+    try:
+        password = urlsplit(configured).password
+        if password:
+            text = text.replace(password, "***")
+    except ValueError:
+        pass
+    return text
+
+
+class SQLiteSpool:
+    """Small FIFO, crash-safe outbox backed by SQLite."""
+
+    def __init__(self, path):
+        self.path = path
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=FULL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS spool (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+        self.db.commit()
+        self.lock = threading.Lock()
+
+    def enqueue(self, payload):
+        with self.lock:
+            cursor = self.db.execute("INSERT INTO spool(payload) VALUES (?)", (json.dumps(payload),))
+            self.db.commit()
+            return cursor.lastrowid
+
+    def first(self):
+        with self.lock:
+            row = self.db.execute("SELECT id, payload FROM spool ORDER BY id LIMIT 1").fetchone()
+        return (row[0], json.loads(row[1])) if row else None
+
+    def acknowledge(self, message_id):
+        with self.lock:
+            self.db.execute("DELETE FROM spool WHERE id = ?", (message_id,))
+            self.db.commit()
+
+    def size(self):
+        with self.lock:
+            return self.db.execute("SELECT COUNT(*) FROM spool").fetchone()[0]
+
+    def close(self):
+        with self.lock:
+            self.db.close()
+
+
+def connect_rabbitmq(stop_event=None):
+    rabbit_url = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@firepager-rmq:5672/")
     parameters = pika.URLParameters(rabbit_url)
-    while True:
+    while stop_event is None or not stop_event.is_set():
         try:
-            logger.info(f"Connecting to RabbitMQ at {rabbit_url}...")
+            logger.info("Connecting to RabbitMQ at %s", redact_url(rabbit_url))
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
-            channel.queue_declare(queue='pager_messages', durable=True)
+            channel.queue_declare(queue=QUEUE, durable=True)
+            # basic_publish now waits for a broker ack/nack.  Do this after
+            # declaring the queue so every connection has identical setup.
+            channel.confirm_delivery()
             logger.info("Successfully connected to RabbitMQ")
             return connection, channel
-        except Exception as e:
-            logger.error(f"Waiting for RabbitMQ... {e}")
-            time.sleep(5)
+        except Exception as exc:
+            logger.error("Waiting for RabbitMQ: %s", safe_error(exc))
+            if stop_event is None:
+                time.sleep(5)
+            elif stop_event.wait(5):
+                return None, None
+    return None, None
+
+
+def publish_confirmed(channel, payload):
+    result = channel.basic_publish(
+        exchange="", routing_key=QUEUE, body=json.dumps(payload),
+        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+    )
+    # BlockingChannel normally raises NackError/UnroutableError.  Fake and
+    # alternate pika channels may report a negative confirmation instead.
+    if result is False:
+        raise RuntimeError("RabbitMQ publisher confirmation was negative")
+
+
+def close_connection(connection):
+    if connection is not None:
+        try:
+            if connection.is_open:
+                connection.close()
+        except Exception as exc:
+            logger.debug("RabbitMQ close failed: %s", safe_error(exc))
+
+
+def terminate_process_group(process, timeout=5):
+    """Stop the SDR pipeline and all of its children, without orphaning rtl_fm."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=timeout)
+    except ProcessLookupError:
+        pass
+    finally:
+        if process.stdout:
+            process.stdout.close()
+
+
+def start_sdr(frequency, ppm=None, gain=None):
+    """Start the receive-only RTL-SDR -> multimon pipeline.
+
+    ``-p`` corrects the dongle's crystal error and ``-g`` makes the gain
+    explicit.  Keeping these in the command (rather than applying them in
+    the decoder) also makes the effective tuning visible in process listings.
+    """
+    ppm = os.environ.get("SDR_PPM", "0") if ppm is None else str(ppm)
+    gain = os.environ.get("SDR_GAIN", "49") if gain is None else str(gain)
+    sample_rate = os.environ.get("SDR_SAMPLE_RATE", "22050")
+    command = (
+        f"rtl_fm -f {shlex.quote(str(frequency))} -s {shlex.quote(sample_rate)} "
+        f"-p {shlex.quote(ppm)} -g {shlex.quote(gain)} | "
+        "multimon-ng -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -f alpha -t raw /dev/stdin"
+    )
+    logger.info("Starting SDR decoder")
+    return subprocess.Popen(
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True, bufsize=1,
+    )
+
+
+def calibration_stations(value):
+    return [parse_station(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def load_calibration(path):
+    """Read only a complete, previously persisted calibration result."""
+    try:
+        with open(path, encoding="utf-8") as source:
+            value = json.load(source)
+        return str(value["SDR_PPM"]), str(value["SDR_GAIN"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def save_calibration(path, value):
+    """Atomically publish a last-known-good calibration file."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".sdr-calibration-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(value, output, indent=2)
+            output.write("\n")
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def perform_calibration(stations, gain, path):
+    """Run one receive-only calibration and persist it only on success."""
+    result = calibrate(stations, gain=gain)
+    save_calibration(path, result)
+    return str(result["SDR_PPM"]), str(result["SDR_GAIN"])
+
+
+def message(client_id, raw_text):
+    return {"client_id": client_id, "timestamp": datetime.now(timezone.utc).isoformat(), "raw_text": raw_text}
+
+
+def drain_spool(spool, connection, channel):
+    """Drain in order; leave the first unconfirmed message for retry."""
+    while connection is not None and connection.is_open:
+        item = spool.first()
+        if item is None:
+            return True
+        item_id, payload = item
+        publish_confirmed(channel, payload)
+        spool.acknowledge(item_id)
+    return False
+
 
 def main():
-    client_id = os.environ.get('CLIENT_ID', os.uname()[1])
-    logger.info(f"Starting FirePager SDR Client (ID: {client_id})...")
-    
-    mock_mode = os.environ.get('MOCK_SDR', 'false').lower() == 'true'
-    frequency = os.environ.get('PAGER_FREQ', '155603323') # Default frequency
-    
-    while True:
-        try:
-            conn, channel = connect_rabbitmq()
-            
-            if mock_mode:
-                logger.info("Running in MOCK mode")
-                mock_samples = [
-                    "POCSAG512: Address:  930032  Function: 2  Alpha:   ID:gdsJ3D<LF>SMOKE VISIBLE INSIDE-FIRE <LF>15:55:48<LF>6525 BANK ST  Dv: 9  Sec: 91D <LF>Gd: 91D<LF>CENOTE RD & STONE SCHOOL RD<LF>PT91 PT93 P92 LA91 TA92 TA94<LF>TA83 SC90 #36719<LF>Sent by: FDP2<EOT><NUL>",
-                    "POCSAG512: Address:  910000  Function: 3  Alpha:   ID:IMzuFU<LF>2ND PAGE STRUCTURE FIRE AT 6525<LF>BANK ST<LF>Sent by: FDP1<EOT><NUL>",
-                    "POCSAG512: Address:    1296  Function: 2  Alpha:   ID:0VFZuQ<LF>MVC-ROLLOVER  16:35:53<LF>3168 DALMAC RD  Dv: 9  Sec: 92B<LF> Gd: 92B<LF>FOREST RD & SPRINGHILL RD<LF>P92 RE93 SO23 TA92 SC90 #37196<LF>Sent by: FDP1<EOT>"
-                ]
-                while True:
-                    import random
-                    raw_line = random.choice(mock_samples)
-                    msg = {
-                        "client_id": client_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "raw_text": raw_line
-                    }
+    client_id = os.environ.get("CLIENT_ID", os.uname().nodename)
+    frequency = os.environ.get("PAGER_FREQ", "155603323")
+    calibration_file = os.environ.get("SDR_CALIBRATION_FILE", "/var/lib/firepager/sdr-calibration.json")
+    configured = load_calibration(calibration_file)
+    ppm, gain = configured or ("0", "49")
+    # Explicit environment values always win over a persisted calibration.
+    ppm = os.environ.get("SDR_PPM", ppm)
+    gain = os.environ.get("SDR_GAIN", gain)
+    stations_value = os.environ.get("SDR_CALIBRATE_STATIONS", "")
+    stations = calibration_stations(stations_value) if stations_value and parse_station else []
+    periodic_interval = float(os.environ.get("SDR_CALIBRATE_INTERVAL", "0"))
+    startup_calibration = os.environ.get("SDR_CALIBRATE_ON_START", "false").lower() == "true"
+    scheduler = None
+    periodic_enabled = bool(stations and periodic_interval > 0 and CalibrationScheduler)
+    if stations and (periodic_enabled or startup_calibration) and CalibrationScheduler:
+        scheduler = CalibrationScheduler(
+            periodic_interval,
+            float(os.environ.get("SDR_CALIBRATE_JITTER", "0")),
+        )
+    mock_mode = os.environ.get("MOCK_SDR", "false").lower() == "true"
+    spool = SQLiteSpool(
+        os.environ.get("SDR_SPOOL_PATH", os.environ.get("SPOOL_DB_PATH", "/var/lib/firepager/sdr-spool.sqlite3"))
+    )
+    stopping = threading.Event()
+    calibration_lock = threading.Lock()
+    connection = channel = process = None
+
+    def stop(_signum, _frame):
+        logger.info("Shutdown requested")
+        stopping.set()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    logger.info("Starting FirePager SDR Client (ID: %s)", client_id)
+    try:
+        if scheduler and startup_calibration:
+            try:
+                with calibration_lock:
+                    ppm, gain = perform_calibration(stations, gain, calibration_file)
+                if periodic_enabled:
+                    scheduler.success()
+                logger.info("Startup SDR calibration succeeded: ppm=%s gain=%s", ppm, gain)
+            except Exception as exc:
+                if periodic_enabled:
+                    scheduler.failure()
+                logger.warning("Startup SDR calibration failed; using last-known-good values: %s", safe_error(exc))
+        elif periodic_enabled:
+            scheduler.schedule()
+        while not stopping.is_set():
+            if connection is None or not connection.is_open:
+                close_connection(connection)
+                connection, channel = connect_rabbitmq(stopping)
+                if stopping.is_set():
+                    break
+            try:
+                if periodic_enabled and scheduler.due():
+                    # rtl_power and rtl_fm cannot safely share one dongle.
+                    # Stop only at this maintenance boundary; the process is
+                    # restarted immediately after calibration or failure.
+                    terminate_process_group(process)
+                    process = None
                     try:
-                        channel.basic_publish(
-                            exchange='',
-                            routing_key='pager_messages',
-                            body=json.dumps(msg),
-                            properties=pika.BasicProperties(delivery_mode=2)
-                        )
-                        logger.info(f"Sent raw mock msg from {client_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to send mock msg: {e}")
-                        break
-                    time.sleep(10)
-            else:
-                # Real mode
-                cmd = f"rtl_fm -f {frequency} -s 22050 -g 49- | multimon-ng -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -f alpha -t raw /dev/stdin"
-                logger.info(f"Starting SDR process with command: {cmd}")
-                
-                process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                
-                for line in iter(process.stdout.readline, ''):
+                        with calibration_lock:
+                            ppm, gain = perform_calibration(stations, gain, calibration_file)
+                        scheduler.success()
+                        logger.info("Periodic SDR calibration succeeded: ppm=%s gain=%s", ppm, gain)
+                    except Exception as exc:
+                        scheduler.failure()
+                        logger.warning("Periodic SDR calibration failed; retaining last-known-good values: %s", safe_error(exc))
+                drain_spool(spool, connection, channel)
+                if mock_mode:
+                    raw_line = "POCSAG512: mock page"
+                    spool.enqueue(message(client_id, raw_line))
+                    drain_spool(spool, connection, channel)
+                    stopping.wait(10)
+                    continue
+                if process is None or process.poll() is not None:
+                    process = start_sdr(frequency, ppm=ppm, gain=gain)
+                # Do not leave shutdown blocked forever on a silent SDR pipe.
+                ready, _, _ = select.select([process.stdout], [], [], 1)
+                if not ready:
+                    continue
+                line = process.stdout.readline()
+                if line:
                     line = line.strip()
-                    if not line:
-                        continue
-                    
-                    msg = {
-                        "client_id": client_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "raw_text": line
-                    }
-                    
-                    try:
-                        channel.basic_publish(
-                            exchange='',
-                            routing_key='pager_messages',
-                            body=json.dumps(msg),
-                            properties=pika.BasicProperties(delivery_mode=2)
-                        )
-                        logger.info(f"Sent raw line from {client_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to send: {e}")
-                        break
+                    if line:
+                        spool.enqueue(message(client_id, line))
+                        drain_spool(spool, connection, channel)
+                elif process.poll() is not None:
+                    terminate_process_group(process)
+                    process = None
+                    stopping.wait(1)
+            except Exception as exc:
+                logger.error("Client work failed; retaining spool: %s", safe_error(exc))
+                close_connection(connection)
+                connection = channel = None
+                stopping.wait(1)
+    finally:
+        terminate_process_group(process)
+        if connection is not None and connection.is_open:
+            try:
+                drain_spool(spool, connection, channel)
+            except Exception as exc:
+                logger.error("Could not drain spool during shutdown: %s", safe_error(exc))
+        close_connection(connection)
+        logger.info("Shutdown complete; %d message(s) remain spooled", spool.size())
+        spool.close()
 
-        except Exception as e:
-            logger.error(f"Main loop error: {e}")
-            time.sleep(10)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
