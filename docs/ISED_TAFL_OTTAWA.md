@@ -66,3 +66,26 @@ frequency peak.
 The downloaded land-mobile extract was dated **2026-10-05**. The geographic
 review used Ontario records within approximately 0.8 degrees latitude and 1.0
 degree longitude of Ottawa; it was not a complete legal or engineering survey.
+
+## Host-side RF check
+
+On 2026-10-19 the attached RTL-SDR was scanned around each candidate at
+38.6 dB gain. The following peaks were repeatable across three short scans:
+
+| Licensed frequency | Observed peak | Prominence | Interpretation |
+|---:|---:|---:|---|
+| 155.610 MHz | 155.610858 MHz | ~10 dB | Best candidate; stable Ottawa Fire paging-band signal. A correction near **-5.5 ppm** moved the peak closest to 155.610 MHz in a PPM sweep. |
+| 163.260 MHz | 163.269217 MHz | ~13 dB | Stable-looking but 9.2 kHz away; likely another/adjacent signal, not a usable absolute reference without identification. |
+| 163.680 MHz | 163.674452 MHz | ~12 dB | Stable-looking but 5.5 kHz away; likely another/adjacent signal. |
+| 165.030 MHz | 165.039920 MHz | ~9 dB | Stable-looking but 9.9 kHz away; not accepted as a reference. |
+| 173.760 MHz | 173.760233 MHz | ~3–6 dB | Weak; insufficient confidence. |
+| 162.550 MHz | 162.552967 MHz | ~2 dB | Too weak/ambiguous for calibration. |
+| 167.565 MHz | 167.560624 MHz | ~1 dB | Noise-level. |
+| 168.930 MHz | 168.928671 MHz | <1 dB | Noise-level. |
+| 169.680 MHz | 169.687108 MHz | <1 dB | Noise-level. |
+
+The 155.610 MHz result is the only candidate currently suitable for practical
+testing. It is still based on the licensed pager channel itself, so automatic
+correction should be confirmed with valid decoded POCSAG traffic and retained
+only when reception improves. Other licensed channels may be intermittent or
+may have adjacent-channel activity despite appearing in TAFL.
