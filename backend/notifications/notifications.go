@@ -123,42 +123,10 @@ func sendPushover(user *models.User, msg *models.Message) {
 }
 
 func sendWhatsApp(user *models.User, msg *models.Message) {
-	if user.PhoneNumber == "" {
-		log.Printf("WhatsApp requested for user %s, but no phone number provided", user.Email)
-		return
-	}
-
-	if !configEnabled("WHATSAPP_GATEWAY_ENABLED") {
-		log.Printf("WhatsApp requested for user %s, but WhatsApp gateway is disabled", user.Email)
-		return
-	}
-
-	provider := strings.ToLower(db.GetConfigValue("SMS_PROVIDER", "twilio"))
-	if provider != "twilio" {
-		log.Printf("WhatsApp provider %q is not supported for user %s", provider, user.Email)
-		return
-	}
-
-	accountSID := strings.TrimSpace(db.GetConfigValue("TWILIO_ACCOUNT_SID", ""))
-	authToken := strings.TrimSpace(db.GetConfigValue("TWILIO_AUTH_TOKEN", ""))
-	fromNumber := strings.TrimSpace(db.GetConfigValue("TWILIO_WHATSAPP_FROM_NUMBER", ""))
-	if accountSID == "" || authToken == "" || fromNumber == "" {
-		log.Printf("Twilio WhatsApp requested for user %s, but WhatsApp configuration is incomplete", user.Email)
-		return
-	}
-
-	toNumber := "whatsapp:" + normalizePhoneNumber(user.PhoneNumber)
-	fromAddress := fromNumber
-	if !strings.HasPrefix(strings.ToLower(fromAddress), "whatsapp:") {
-		fromAddress = "whatsapp:" + normalizePhoneNumber(fromAddress)
-	}
-
-	if err := sendTwilioMessage(accountSID, authToken, toNumber, fromAddress, buildWhatsAppContent(msg)); err != nil {
-		log.Printf("Twilio WhatsApp failed for %s: %v", user.Email, err)
-		return
-	}
-
-	log.Printf("Twilio WhatsApp sent successfully to %s", user.PhoneNumber)
+	// The legacy Twilio path is intentionally inert. WhatsApp delivery must be
+	// wired through WhatsAppAdapter with an explicit provider and consent gate;
+	// this notification entry point has neither a consent record nor a provider.
+	log.Printf("WhatsApp requested, but WhatsApp delivery is not wired")
 }
 
 func configEnabled(key string) bool {

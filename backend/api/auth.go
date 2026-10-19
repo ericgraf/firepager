@@ -188,7 +188,7 @@ func generateToken(user *models.User) (string, error) {
 
 func CreateInviteHandler(c *gin.Context) {
 	creatorID, _ := c.Get("user_id")
-	
+
 	// Generate random code
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {

@@ -47,6 +47,33 @@ type User struct {
 	InvitedByName     string   `json:"invited_by_name,omitempty"`
 }
 
+// SubscriptionRule is a dimension match for an alert. An empty station or
+// call type is a wildcard for that dimension.
+type SubscriptionRule struct {
+	ID       int    `json:"id,omitempty"`
+	Station  string `json:"station"`
+	CallType string `json:"call_type"`
+	Enabled  bool   `json:"enabled"`
+}
+
+type NotificationChannel struct {
+	ID      int    `json:"id,omitempty"`
+	Type    string `json:"type"`
+	Address string `json:"address"`
+	Enabled bool   `json:"enabled"`
+}
+
+type SubscriptionSettings struct {
+	Enabled  bool                  `json:"enabled"`
+	Rules    []SubscriptionRule    `json:"rules"`
+	Channels []NotificationChannel `json:"channels"`
+}
+
+type CatalogEntry struct {
+	Code  string `json:"code"`
+	Label string `json:"label"`
+}
+
 type Invite struct {
 	ID            int       `json:"id"`
 	Code          string    `json:"code"`

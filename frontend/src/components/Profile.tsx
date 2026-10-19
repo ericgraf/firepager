@@ -37,6 +37,179 @@ interface TagInputProps {
   placeholder?: string;
 }
 
+type SubscriptionValues = {
+  capcodes: string[];
+  vehicles: string[];
+  stations: string[];
+  call_types: string[];
+};
+
+type Catalog = {
+  stations: string[];
+  call_types: string[];
+  channels: string[];
+};
+
+const CHANNELS = ['SMS', 'WhatsApp', 'Email', 'Push', 'Pushover'];
+
+const uniqueStrings = (items: unknown): string[] => Array.isArray(items)
+  ? [...new Set(items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()))]
+  : [];
+
+function SubscriptionSettings({
+  token,
+  initialValues,
+  initialChannels,
+  phoneNumber,
+}: {
+  token: string | null;
+  initialValues: SubscriptionValues;
+  initialChannels: string[];
+  phoneNumber: string;
+}) {
+  const [values, setValues] = useState<SubscriptionValues>(initialValues);
+  const [channels, setChannels] = useState<string[]>(initialChannels);
+  const [catalog, setCatalog] = useState<Catalog>({ stations: [], call_types: [], channels: CHANNELS });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [whatsappConsent, setWhatsappConsent] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationRequested, setVerificationRequested] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const headers = { Authorization: `Bearer ${token}` };
+        const [subscriptionResponse, catalogResponse] = await Promise.all([
+          fetch('/api/profile/subscriptions', { headers }),
+          fetch('/api/profile/subscriptions/catalog', { headers }),
+        ]);
+        if (!cancelled && subscriptionResponse.ok) {
+          const data = await subscriptionResponse.json();
+          const source = data.subscriptions || data;
+          setValues((current) => ({
+            capcodes: uniqueStrings(source.capcodes ?? current.capcodes),
+            vehicles: uniqueStrings(source.vehicles ?? current.vehicles),
+            stations: uniqueStrings(source.stations ?? current.stations),
+            call_types: uniqueStrings(source.call_types ?? current.call_types),
+          }));
+          if (Array.isArray(source.notification_types)) setChannels(uniqueStrings(source.notification_types));
+        }
+        if (!cancelled && catalogResponse.ok) {
+          const data = await catalogResponse.json();
+          const source = data.catalog || data;
+          setCatalog({
+            stations: uniqueStrings(source.stations ?? source.station),
+            call_types: uniqueStrings(source.call_types ?? source.callTypes ?? source.call_types_catalog),
+            channels: uniqueStrings(source.channels).length ? uniqueStrings(source.channels) : CHANNELS,
+          });
+        }
+      } catch {
+        // The catalog is optional: manually entered values remain usable when the API is unavailable.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [token]);
+
+  const updateList = (key: keyof SubscriptionValues, next: string[]) => {
+    setValues((current) => ({ ...current, [key]: next }));
+  };
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError('');
+    setNotice('');
+    setSaving(true);
+    const payload = { ...values, notification_types: channels };
+    try {
+      let response = await fetch('/api/profile/subscriptions', {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      // Older deployments do not have the subscription resource yet.
+      if (response.status === 404 || response.status === 405) {
+        response = await fetch('/api/profile', {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+      if (!response.ok) throw new Error('Unable to save subscription settings. Please try again.');
+      setNotice('Subscription settings saved.');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Unable to save subscription settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleChannel = (channel: string) => {
+    setChannels((current) => current.includes(channel) ? current.filter((item) => item !== channel) : [...current, channel]);
+  };
+
+  const requestVerification = () => {
+    setVerificationRequested(true);
+    setNotice('Verification is ready to connect when WhatsApp verification is enabled by the service.');
+  };
+
+  return (
+    <div className="card subscription-settings">
+      <div className="section-heading">
+        <div>
+          <h2>Subscription settings</h2>
+          <p className="small-text">Choose the stations, call types, and channels that should reach you.</p>
+        </div>
+        {loading && <span className="small-text" role="status">Loading catalog…</span>}
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+      {notice && <div className="subscription-notice" role="status">{notice}</div>}
+      <form onSubmit={save}>
+        <div className="subscription-grid">
+          <TagInput label="Capcodes" tags={values.capcodes} onAdd={(item) => updateList('capcodes', [...values.capcodes, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('capcodes', values.capcodes.filter((_, i) => i !== index))} placeholder="e.g. 0123456" />
+          <TagInput label="Vehicles" tags={values.vehicles} onAdd={(item) => updateList('vehicles', [...values.vehicles, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('vehicles', values.vehicles.filter((_, i) => i !== index))} placeholder="e.g. E101" />
+          <TagInput label="Stations" tags={values.stations} onAdd={(item) => updateList('stations', [...values.stations, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('stations', values.stations.filter((_, i) => i !== index))} placeholder={catalog.stations[0] || 'e.g. Station 10'} />
+          <TagInput label="Call types" tags={values.call_types} onAdd={(item) => updateList('call_types', [...values.call_types, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('call_types', values.call_types.filter((_, i) => i !== index))} placeholder={catalog.call_types[0] || 'e.g. Structure Fire'} />
+        </div>
+
+        {(catalog.stations.length > 0 || catalog.call_types.length > 0) && <p className="catalog-hint">Catalog suggestions: {[...catalog.stations, ...catalog.call_types].slice(0, 8).join(' · ')}</p>}
+
+        <fieldset className="channel-options">
+          <legend>Delivery channels</legend>
+          <p className="small-text">Opt in only to channels you can receive. Current selections are shown below.</p>
+          <div className="channel-grid">
+            {(catalog.channels.length ? catalog.channels : CHANNELS).map((channel) => (
+              <label className="channel-option" key={channel}>
+                <input type="checkbox" checked={channels.includes(channel)} onChange={() => toggleChannel(channel)} />
+                <span><strong>{channel}</strong><small>{channels.includes(channel) ? 'Opted in' : 'Not opted in'}</small></span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <div className="whatsapp-panel">
+          <div><h3>WhatsApp verification</h3><p className="small-text">Verification is required before WhatsApp delivery can be enabled.</p></div>
+          <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => setWhatsappConsent(event.target.checked)} /> <span>I consent to receiving FirePager alerts on WhatsApp at <strong>{phoneNumber || 'the phone number on my profile'}</strong>.</span></label>
+          <div className="verification-controls">
+            <button type="button" onClick={requestVerification} disabled={!whatsappConsent || !phoneNumber || verificationRequested}>Request verification code</button>
+            <input aria-label="WhatsApp verification code" inputMode="numeric" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="Code (when received)" disabled={!verificationRequested} />
+          </div>
+          <p className="small-text">No message is sent by this screen yet; this is a consent and verification-ready scaffold.</p>
+        </div>
+
+        <div className="subscription-actions"><button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save subscription settings'}</button></div>
+      </form>
+    </div>
+  );
+}
+
 function TagInput({ label, tags, onAdd, onDelete, placeholder }: TagInputProps) {
   const [value, setValue] = useState('');
 
@@ -188,18 +361,6 @@ export function Profile() {
 
   const handleNotifyChange = (type: keyof typeof notifications) => {
     setNotifications({ ...notifications, [type]: !notifications[type] });
-  };
-
-  const addSubscriptionItem = (key: keyof typeof subscriptions, item: string) => {
-    if (!subscriptions[key].includes(item)) {
-      setSubscriptions({ ...subscriptions, [key]: [...subscriptions[key], item] });
-    }
-  };
-
-  const removeSubscriptionItem = (key: keyof typeof subscriptions, index: number) => {
-    const newList = [...subscriptions[key]];
-    newList.splice(index, 1);
-    setSubscriptions({ ...subscriptions, [key]: newList });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -393,47 +554,12 @@ export function Profile() {
         </div>
       )}
 
-      <div className="card">
-        <h2>Subscription Management</h2>
-        <p style={{ marginBottom: '24px', color: '#666' }}>These subscriptions determine which pager messages and incidents trigger notifications for you.</p>
-        
-        <form onSubmit={handleSubmit}>
-          <div className="subscription-grid">
-            <TagInput 
-              label="Capcodes" 
-              tags={subscriptions.capcodes} 
-              onAdd={(item) => addSubscriptionItem('capcodes', item)} 
-              onDelete={(idx) => removeSubscriptionItem('capcodes', idx)} 
-              placeholder="e.g. 0123456"
-            />
-            <TagInput 
-              label="Vehicles" 
-              tags={subscriptions.vehicles} 
-              onAdd={(item) => addSubscriptionItem('vehicles', item)} 
-              onDelete={(idx) => removeSubscriptionItem('vehicles', idx)} 
-              placeholder="e.g. E101, T5"
-            />
-            <TagInput 
-              label="Stations" 
-              tags={subscriptions.stations} 
-              onAdd={(item) => addSubscriptionItem('stations', item)} 
-              onDelete={(idx) => removeSubscriptionItem('stations', idx)} 
-              placeholder="e.g. Station 10"
-            />
-            <TagInput 
-              label="Call Types" 
-              tags={subscriptions.call_types} 
-              onAdd={(item) => addSubscriptionItem('call_types', item)} 
-              onDelete={(idx) => removeSubscriptionItem('call_types', idx)} 
-              placeholder="e.g. Structure Fire"
-            />
-          </div>
-
-          <div style={{ marginTop: '32px', borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
-            <button type="submit" style={{ background: 'var(--text-h)' }}>Save All Subscriptions</button>
-          </div>
-        </form>
-      </div>
+      <SubscriptionSettings
+        token={token}
+        initialValues={subscriptions}
+        initialChannels={Object.entries(notifications).filter(([, enabled]) => enabled).map(([channel]) => channel)}
+        phoneNumber={formData.phone_number}
+      />
     </div>
   );
 }

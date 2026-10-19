@@ -160,6 +160,36 @@ func createSchema() {
 		key VARCHAR(100) PRIMARY KEY,
 		value TEXT NOT NULL
 	);
+	CREATE TABLE IF NOT EXISTS subscription_catalog_stations (
+		code VARCHAR(50) PRIMARY KEY,
+		label VARCHAR(100) NOT NULL,
+		is_active BOOLEAN NOT NULL DEFAULT TRUE
+	);
+	CREATE TABLE IF NOT EXISTS subscription_catalog_call_types (
+		code VARCHAR(100) PRIMARY KEY,
+		label VARCHAR(150) NOT NULL,
+		is_active BOOLEAN NOT NULL DEFAULT TRUE
+	);
+	CREATE TABLE IF NOT EXISTS user_subscription_settings (
+		user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		enabled BOOLEAN NOT NULL DEFAULT TRUE
+	);
+	CREATE TABLE IF NOT EXISTS user_subscription_rules (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		station VARCHAR(50) NOT NULL DEFAULT '',
+		call_type VARCHAR(100) NOT NULL DEFAULT '',
+		enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		UNIQUE (user_id, station, call_type)
+	);
+	CREATE TABLE IF NOT EXISTS user_notification_channels (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		type VARCHAR(20) NOT NULL,
+		address VARCHAR(255) NOT NULL,
+		enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		UNIQUE (user_id, type, address)
+	);
 	-- Query indexes for the high-volume message list and time-window metrics.
 	CREATE INDEX IF NOT EXISTS messages_timestamp_id_idx ON messages (timestamp DESC, id DESC);
 	CREATE INDEX IF NOT EXISTS messages_type_timestamp_idx ON messages (type, timestamp DESC);
@@ -171,6 +201,16 @@ func createSchema() {
 	if err != nil {
 		log.Fatalf("Error creating schema: %v", err)
 	}
+	// Existing message dimensions become available to subscription clients on
+	// upgrade. New dimensions are also exposed by GetSubscriptionCatalogs.
+	_, _ = DB.Exec(`INSERT INTO subscription_catalog_call_types (code, label)
+		SELECT DISTINCT call_type, call_type FROM messages
+		WHERE call_type IS NOT NULL AND BTRIM(call_type) <> ''
+		ON CONFLICT (code) DO NOTHING`)
+	_, _ = DB.Exec(`INSERT INTO subscription_catalog_stations (code, label)
+		SELECT DISTINCT BTRIM(s), BTRIM(s) FROM messages, regexp_split_to_table(station, ',') AS s
+		WHERE type = 'CALL' AND BTRIM(s) <> ''
+		ON CONFLICT (code) DO NOTHING`)
 
 	// Default Configs
 	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('SMS_GATEWAY_ENABLED', 'false') ON CONFLICT (key) DO NOTHING")
