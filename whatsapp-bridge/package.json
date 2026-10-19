@@ -1,0 +1,16 @@
+{
+  "name": "firepager-whatsapp-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Opt-in local Baileys bridge for Firepager (unofficial; disabled by default)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "qrcode": "^1.5.4"
+  }
+}

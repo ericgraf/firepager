@@ -190,6 +190,16 @@ func sendWhatsApp(user *models.User, msg *models.Message) {
 	for _, config := range configs {
 		values[config.Key] = config.Value
 	}
+	// Meta remains the default/official path. The unofficial bridge is selected
+	// only by an explicit provider value and the same consent/gateway gates.
+	if strings.EqualFold(strings.TrimSpace(values["WHATSAPP_PROVIDER"]), "baileys") {
+		bridge := ParseBaileysConfig(values)
+		adapter := WhatsAppAdapter{Config: MetaCloudConfig{Enabled: bridge.Enabled, TemplateName: "bridge", LanguageCode: "en"}, Provider: NewBaileysSender(bridge, nil)}
+		if err := adapter.SendTemplate(context.Background(), user.PhoneNumber, user.WhatsAppConsented, []string{buildWhatsAppContent(msg)}); err != nil {
+			log.Printf("WhatsApp notification skipped: %v", err)
+		}
+		return
+	}
 	cfg := ParseMetaCloudConfig(values)
 	// Consent is stored on the user and is checked before constructing a
 	// provider request. Enabled remains false unless explicitly configured.

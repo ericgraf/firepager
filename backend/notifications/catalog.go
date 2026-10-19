@@ -63,6 +63,9 @@ func smsConfigured(config map[string]string, _ *models.User) bool {
 }
 
 func whatsappConfigured(config map[string]string, _ *models.User) bool {
+	if strings.EqualFold(strings.TrimSpace(config["WHATSAPP_PROVIDER"]), "baileys") {
+		return strings.TrimSpace(config["WHATSAPP_BRIDGE_URL"]) != "" && strings.TrimSpace(config["WHATSAPP_BRIDGE_AUTH_TOKEN"]) != ""
+	}
 	return configTruthy(config["WHATSAPP_GATEWAY_ENABLED"]) && strings.TrimSpace(firstNonEmpty(config["META_WHATSAPP_ACCESS_TOKEN"], config["WHATSAPP_ACCESS_TOKEN"])) != "" &&
 		strings.TrimSpace(firstNonEmpty(config["META_WHATSAPP_PHONE_NUMBER_ID"], config["WHATSAPP_PHONE_NUMBER_ID"])) != ""
 }
