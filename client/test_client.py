@@ -75,6 +75,18 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual((config["interval"], config["jitter"], config["min_stations"]), (60.0, 15.0, 2))
         self.assertTrue(config["on_start"])
 
+    def test_target_calibration_is_opt_in_and_configurable(self):
+        config = client.calibration_config({
+            "SDR_CALIBRATE_TARGET_ON_START": "true",
+            "SDR_CALIBRATE_TARGET_PPM_MIN": "-4",
+            "SDR_CALIBRATE_TARGET_PPM_MAX": "4",
+            "SDR_CALIBRATE_TARGET_PPM_STEP": "2",
+            "SDR_CALIBRATE_TARGET_REPEATS": "3",
+        })
+        self.assertTrue(config["target_on_start"])
+        self.assertEqual(config["target_candidates"], [-4.0, -2.0, 0.0, 2.0, 4.0])
+        self.assertEqual(config["target_repeats"], 3)
+
     def test_calibration_file_is_last_known_good_and_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "nested", "calibration.json")

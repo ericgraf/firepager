@@ -87,6 +87,37 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         sdr_calibrate.validate_result(result, min_stations=2)
 
+    def test_target_calibration_uses_repeatable_prominent_target(self):
+        calls = []
+        class Result:
+            stdout = "date,time,155603223,155603423,10000,1,-80,-80,-80\n"
+        def runner(command, **kwargs):
+            calls.append(command)
+            ppm = float(command[command.index("-p") + 1])
+            Result.stdout = ("date,time,155603223,155603423,10000,1,-80,-25,-80\n"
+                             if ppm == 2 else
+                             "date,time,155603223,155603423,10000,1,-80,-78,-80\n")
+            return Result()
+        result = sdr_calibrate.calibrate_target(
+            155603323, gain="38", candidates=[-1, 0, 1, 2, 3],
+            repeats=2, runner=runner)
+        self.assertEqual(result["SDR_PPM"], 2.0)
+        self.assertEqual(len(calls), 10)
+
+    def test_target_calibration_rejects_nonrepeatable_signal(self):
+        class Result:
+            stdout = ""
+        state = [0]
+        def runner(command, **kwargs):
+            state[0] += 1
+            Result.stdout = ("date,time,155603223,155603423,10000,1,-80,-20,-80\n"
+                             if state[0] == 1 else
+                             "date,time,155603223,155603423,10000,1,-80,-79,-80\n")
+            return Result()
+        with self.assertRaises(ValueError):
+            sdr_calibrate.calibrate_target(155603323, candidates=[0, 1],
+                                           repeats=2, runner=runner)
+
     def test_rejects_disagreeing_reference_stations(self):
         result = {"SDR_PPM": 0, "SDR_GAIN": "38", "stations": [
             {"ppm": 2.0}, {"ppm": 9.0},

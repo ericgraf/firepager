@@ -23,9 +23,11 @@ from urllib.parse import urlsplit, urlunsplit
 import pika
 
 try:
-    from sdr_calibrate import CalibrationScheduler, calibrate, parse_station, validate_result
+    from sdr_calibrate import (CalibrationScheduler, calibrate, calibrate_target,
+                               parse_station, target_ppm_candidates, validate_result)
 except ImportError:  # Allows importing this module in minimal non-SDR tooling.
-    CalibrationScheduler = calibrate = parse_station = validate_result = None
+    CalibrationScheduler = calibrate = calibrate_target = parse_station = None
+    target_ppm_candidates = validate_result = None
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -232,11 +234,21 @@ def calibration_config(environ=None):
         interval = float(environ.get("SDR_CALIBRATE_INTERVAL", "0"))
         jitter = float(environ.get("SDR_CALIBRATE_JITTER", "0"))
         min_stations = int(environ.get("SDR_CALIBRATE_MIN_STATIONS", "1"))
+        target_start = float(environ.get("SDR_CALIBRATE_TARGET_PPM_MIN", "-8"))
+        target_end = float(environ.get("SDR_CALIBRATE_TARGET_PPM_MAX", "8"))
+        target_step = float(environ.get("SDR_CALIBRATE_TARGET_PPM_STEP", "1"))
+        target_repeats = int(environ.get("SDR_CALIBRATE_TARGET_REPEATS", "2"))
     except (TypeError, ValueError) as exc:
         raise ValueError("invalid SDR calibration environment configuration") from exc
     if (not math.isfinite(interval) or not math.isfinite(jitter)
             or interval < 0 or jitter < 0 or min_stations < 1):
         raise ValueError("SDR calibration interval and jitter must be non-negative; minimum stations must be positive")
+    if target_repeats < 2 or target_step <= 0 or target_end < target_start:
+        raise ValueError("invalid target SDR calibration candidate range or repeats")
+    try:
+        target_candidates = target_ppm_candidates(target_start, target_end, target_step)
+    except ValueError as exc:
+        raise ValueError("invalid target SDR calibration candidate range") from exc
     return {
         "stations": stations,
         "interval": interval,
@@ -245,6 +257,13 @@ def calibration_config(environ=None):
         "quiet_period": environment_float(
             "SDR_CALIBRATE_QUIET_PERIOD", 5, minimum=0, environ=environ),
         "on_start": environ.get("SDR_CALIBRATE_ON_START", "false").lower() == "true",
+        "target_on_start": environ.get("SDR_CALIBRATE_TARGET_ON_START", "false").lower() == "true",
+        "target_candidates": target_candidates,
+        "target_repeats": target_repeats,
+        "target_min_prominence": environment_float(
+            "SDR_CALIBRATE_TARGET_MIN_PROMINENCE", 6, minimum=0, environ=environ),
+        "target_min_margin": environment_float(
+            "SDR_CALIBRATE_TARGET_MIN_MARGIN", 1, minimum=0, environ=environ),
     }
 
 
@@ -295,6 +314,22 @@ def perform_calibration(stations, gain, path, stop_event=None):
     return str(result["SDR_PPM"]), str(result["SDR_GAIN"])
 
 
+def perform_target_calibration(target_hz, gain, path, config, stop_event=None):
+    """Run target-band calibration and atomically persist only a good result."""
+    if stop_event is not None and stop_event.is_set():
+        raise CalibrationAborted()
+    result = calibrate_target(
+        target_hz, gain=gain, candidates=config["target_candidates"],
+        repeats=config["target_repeats"],
+        min_prominence=config["target_min_prominence"],
+        min_margin=config["target_min_margin"],
+    )
+    if stop_event is not None and stop_event.is_set():
+        raise CalibrationAborted()
+    save_calibration(path, result)
+    return str(result["SDR_PPM"]), str(result["SDR_GAIN"])
+
+
 def message(client_id, raw_text):
     return {"client_id": client_id, "timestamp": datetime.now(timezone.utc).isoformat(), "raw_text": raw_text}
 
@@ -330,6 +365,7 @@ def main():
     stations = calibration["stations"]
     periodic_interval = calibration["interval"]
     startup_calibration = calibration["on_start"]
+    target_startup_calibration = calibration["target_on_start"]
     scheduler = None
     periodic_enabled = bool(stations and periodic_interval > 0 and CalibrationScheduler)
     if stations and (periodic_enabled or startup_calibration) and CalibrationScheduler:
@@ -354,6 +390,15 @@ def main():
     signal.signal(signal.SIGINT, stop)
     logger.info("Starting FirePager SDR Client (ID: %s)", client_id)
     try:
+        if target_startup_calibration and calibrate_target:
+            try:
+                # This runs before rtl_fm starts, so rtl_power and rtl_fm never
+                # own the dongle concurrently.
+                ppm, gain = perform_target_calibration(
+                    float(frequency), gain, calibration_file, calibration, stopping)
+                logger.info("Startup target SDR calibration succeeded: ppm=%s gain=%s", ppm, gain)
+            except Exception as exc:
+                logger.warning("Startup target SDR calibration failed; using last-known-good values: %s", safe_error(exc))
         if scheduler and startup_calibration:
             try:
                 with calibration_lock:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Receive-only RTL-SDR calibration using known FM broadcast carriers.
+"""Receive-only RTL-SDR calibration using known FM carriers or a pager signal.
 
 No transmitter or network dependency is used.  ``rtl_power`` performs a
 short receive scan; the strongest bin near each supplied station is compared
@@ -56,6 +56,45 @@ def strongest_frequency(csv_text):
     return best
 
 
+def _power_bins(csv_text):
+    """Return usable ``(frequency, power)`` bins from rtl_power output."""
+    bins = []
+    for row in csv.reader(csv_text.splitlines()):
+        if len(row) < 7:
+            continue
+        try:
+            low, step = float(row[2]), float(row[4])
+            powers = [float(item) for item in row[6:] if item.strip()]
+        except (ValueError, IndexError):
+            continue
+        bins.extend((low + index * step, power)
+                    for index, power in enumerate(powers))
+    return bins
+
+
+def target_signal_score(csv_text, target_hz, band_hz=25_000):
+    """Score a target-band signal by peak prominence over the scan noise floor.
+
+    The score deliberately uses only bins around ``target_hz``; a strong FM
+    station elsewhere in the scan cannot win a pager calibration.
+    """
+    bins = _power_bins(csv_text)
+    if not bins:
+        raise ValueError("rtl_power produced no usable CSV power bins")
+    nearby = [power for frequency, power in bins
+              if abs(frequency - float(target_hz)) <= band_hz]
+    if not nearby:
+        raise ValueError("rtl_power produced no bins near the pager target")
+    peak = max(nearby)
+    floor = statistics.median(power for _, power in bins)
+    return {
+        "peak_db": peak,
+        "noise_floor_db": floor,
+        "prominence_db": peak - floor,
+        "energy_db": statistics.mean(nearby),
+    }
+
+
 def estimate_ppm(known_hz, measured_hz):
     """Return the observed oscillator offset (measured minus known), in ppm."""
     return (measured_hz - known_hz) / known_hz * 1_000_000
@@ -80,6 +119,73 @@ def scan(station_hz, gain, ppm=0, runner=subprocess.run, timeout=30):
     result = runner(command, capture_output=True, text=True, timeout=timeout,
                     check=True)
     return strongest_frequency(result.stdout)
+
+
+def scan_target(target_hz, gain, ppm=0, runner=subprocess.run, timeout=30):
+    """Scan only the known pager band; this is receive-only."""
+    width = 100_000
+    start, end = int(float(target_hz) - width), int(float(target_hz) + width)
+    command = ["rtl_power", "-f", f"{start}:{end}:1000", "-g", str(gain),
+               "-p", str(ppm), "-1"]
+    result = runner(command, capture_output=True, text=True, timeout=timeout,
+                    check=True)
+    return target_signal_score(result.stdout, target_hz)
+
+
+def target_ppm_candidates(start=-8, end=8, step=1):
+    """Build a bounded, deterministic candidate list for target calibration."""
+    start, end, step = float(start), float(end), float(step)
+    if not all(math.isfinite(value) for value in (start, end, step)) or step <= 0 or end < start:
+        raise ValueError("invalid target PPM candidate range")
+    count = int(math.floor((end - start) / step + 1e-9)) + 1
+    if count > 401:
+        raise ValueError("target PPM candidate range is too large")
+    return [round(start + index * step, 6) for index in range(count)]
+
+
+def calibrate_target(target_hz, gain="49", candidates=None, repeats=2,
+                     min_prominence=6.0, min_margin=1.0, runner=subprocess.run):
+    """Find a repeatable PPM correction from the known POCSAG target signal.
+
+    Every candidate owns the dongle only for its short receive scan.  A weak,
+    absent, or ambiguous target raises ``ValueError`` and must not be saved.
+    """
+    candidates = target_ppm_candidates() if candidates is None else list(candidates)
+    if len(candidates) < 2 or any(not math.isfinite(float(item)) for item in candidates):
+        raise ValueError("at least two valid target PPM candidates are required")
+    repeats = int(repeats)
+    if repeats < 2:
+        raise ValueError("target calibration requires at least two repeats")
+    observations = {float(candidate): [] for candidate in candidates}
+    winners = []
+    for repeat in range(repeats):
+        scored = []
+        for candidate in candidates:
+            score = scan_target(target_hz, gain, ppm=candidate, runner=runner)
+            observations[float(candidate)].append(score)
+            scored.append((score["prominence_db"], float(candidate)))
+        winners.append(max(scored)[1])
+    if len(set(winners)) != 1:
+        raise ValueError("target signal did not produce a repeatable PPM winner")
+    ranked = sorted(
+        ((statistics.mean(item["prominence_db"] for item in values), candidate)
+         for candidate, values in observations.items()), reverse=True)
+    best_score, best = ranked[0]
+    margin = best_score - ranked[1][0]
+    if best_score < float(min_prominence):
+        raise ValueError("no sufficiently prominent pager signal near target")
+    if margin < float(min_margin):
+        raise ValueError("target PPM winner lacks sufficient confidence margin")
+    result = {
+        "SDR_PPM": round(best, 2), "SDR_GAIN": str(gain),
+        "target_hz": float(target_hz), "prominence_db": round(best_score, 2),
+        "confidence_margin_db": round(margin, 2), "repeats": repeats,
+        "target_candidates": [
+            {"ppm": candidate, "prominence_db": round(score, 2)}
+            for score, candidate in ranked
+        ],
+    }
+    return result
 
 
 def calibrate(stations, gain="49", runner=subprocess.run):
@@ -191,15 +297,29 @@ class CalibrationScheduler:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--station", action="append", required=True,
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--station", action="append",
                         metavar="NAME=FREQUENCY",
                         help="known FM station, in Hz or MHz; repeatable")
+    source.add_argument("--target", type=float, metavar="FREQUENCY",
+                        help="known POCSAG target frequency in Hz")
     parser.add_argument("--gain", default="49",
                         help="RTL gain in dB (default: 49; calibrate each dongle consistently)")
+    parser.add_argument("--ppm-min", type=float, default=-8)
+    parser.add_argument("--ppm-max", type=float, default=8)
+    parser.add_argument("--ppm-step", type=float, default=1)
+    parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--output", help="write JSON calibration file")
     args = parser.parse_args(argv)
     try:
-        result = calibrate([parse_station(item) for item in args.station], args.gain)
+        if args.target is not None:
+            result = calibrate_target(
+                args.target, args.gain,
+                candidates=target_ppm_candidates(args.ppm_min, args.ppm_max, args.ppm_step),
+                repeats=args.repeats,
+            )
+        else:
+            result = calibrate([parse_station(item) for item in args.station], args.gain)
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         parser.error(str(exc))
     serialized = json.dumps(result, indent=2) + "\n"
