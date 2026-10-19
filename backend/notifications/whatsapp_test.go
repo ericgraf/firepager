@@ -2,7 +2,12 @@ package notifications
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -17,6 +22,55 @@ func TestParseMetaCloudConfigDisabledByDefault(t *testing.T) {
 	}
 	if cfg.AccessToken != "secret-token" {
 		t.Fatal("access token was not parsed")
+	}
+}
+
+func TestMetaCloudSenderUsesTemplateAndRetriesTransientFailure(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Error("missing authorization")
+		}
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := MetaCloudConfig{Enabled: true, AccessToken: "secret", PhoneNumberID: "id", Endpoint: server.URL, Attempts: 2}
+	sender := NewMetaCloudSender(cfg, server.Client())
+	req, err := BuildMetaCloudTemplateRequest(MetaCloudConfig{TemplateName: "alert", LanguageCode: "en"}, "+12125550100", nil)
+	if err != nil || sender.Send(context.Background(), req) != nil {
+		t.Fatalf("sender failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected retry, got %d requests", attempts)
+	}
+}
+
+func TestMetaWebhookSignatureAndDeduplication(t *testing.T) {
+	body := []byte(`{"entry":[{"changes":[{"value":{"statuses":[{"id":"wamid.1","status":"delivered"}]}}]}]}`)
+	secret := "app-secret"
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(body)
+	if !VerifyMetaSignature(body, "sha256="+fmt.Sprintf("%x", h.Sum(nil)), secret) {
+		t.Fatal("valid signature rejected")
+	}
+	if VerifyMetaSignature(body, "sha256=bad", secret) {
+		t.Fatal("invalid signature accepted")
+	}
+	seen := 0
+	p := NewWebhookProcessor(func(context.Context, MetaStatus) error { seen++; return nil })
+	if err := p.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 1 {
+		t.Fatalf("duplicate status handled %d times", seen)
 	}
 }
 

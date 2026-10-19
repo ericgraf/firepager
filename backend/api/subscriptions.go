@@ -31,6 +31,10 @@ func UpdateSubscriptionSettingsHandler(c *gin.Context) {
 		return
 	}
 	if err := db.SaveSubscriptionSettings(c.MustGet("user_id").(int), &settings); err != nil {
+		if err == db.ErrWhatsAppNotEligible {
+			c.JSON(http.StatusConflict, gin.H{"error": "WhatsApp requires a verified phone number and consent"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save subscriptions"})
 		return
 	}

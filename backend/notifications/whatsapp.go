@@ -7,12 +7,21 @@ package notifications
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 var (
@@ -22,8 +31,8 @@ var (
 )
 
 // MetaCloudConfig contains non-secret settings needed to construct a Meta
-// Cloud API request. AccessToken is retained for the eventual provider, but is
-// never included in a request payload or an error.
+// MetaCloudConfig contains Cloud API settings. AccessToken is never included
+// in a request payload or an error (it is sent only as an Authorization header).
 type MetaCloudConfig struct {
 	Enabled       bool
 	AccessToken   string
@@ -31,6 +40,11 @@ type MetaCloudConfig struct {
 	APIVersion    string
 	TemplateName  string
 	LanguageCode  string
+	VerifyToken   string
+	AppSecret     string
+	Endpoint      string
+	Timeout       time.Duration
+	Attempts      int
 }
 
 // ParseMetaCloudConfig parses configuration without enabling delivery unless
@@ -41,17 +55,30 @@ func ParseMetaCloudConfig(values map[string]string) MetaCloudConfig {
 			if value := strings.TrimSpace(values[key]); value != "" {
 				return value
 			}
+			if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+				return value
+			}
 		}
 		return ""
 	}
-	return MetaCloudConfig{
+	cfg := MetaCloudConfig{
 		Enabled:       configTruthy(get("WHATSAPP_GATEWAY_ENABLED", "META_WHATSAPP_ENABLED")),
 		AccessToken:   get("META_WHATSAPP_ACCESS_TOKEN", "WHATSAPP_ACCESS_TOKEN"),
 		PhoneNumberID: get("META_WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_PHONE_NUMBER_ID"),
 		APIVersion:    get("META_WHATSAPP_API_VERSION", "WHATSAPP_API_VERSION"),
 		TemplateName:  get("META_WHATSAPP_TEMPLATE_NAME", "WHATSAPP_TEMPLATE_NAME"),
 		LanguageCode:  get("META_WHATSAPP_TEMPLATE_LANGUAGE", "WHATSAPP_TEMPLATE_LANGUAGE"),
+		VerifyToken:   get("META_WHATSAPP_VERIFY_TOKEN", "WHATSAPP_VERIFY_TOKEN"),
+		AppSecret:     get("META_WHATSAPP_APP_SECRET", "WHATSAPP_APP_SECRET"),
+		Endpoint:      get("META_WHATSAPP_API_URL", "WHATSAPP_API_URL"),
 	}
+	if seconds, err := strconv.Atoi(get("META_WHATSAPP_TIMEOUT_SECONDS", "WHATSAPP_TIMEOUT_SECONDS")); err == nil && seconds > 0 && seconds <= 120 {
+		cfg.Timeout = time.Duration(seconds) * time.Second
+	}
+	if attempts, err := strconv.Atoi(get("META_WHATSAPP_ATTEMPTS", "WHATSAPP_ATTEMPTS")); err == nil && attempts >= 1 && attempts <= 3 {
+		cfg.Attempts = attempts
+	}
+	return cfg
 }
 
 func configTruthy(value string) bool {
@@ -277,3 +304,169 @@ func RetryAfterSeconds(value string) (int, bool) {
 	seconds, err := strconv.Atoi(strings.TrimSpace(value))
 	return seconds, err == nil && seconds >= 0
 }
+
+// MetaCloudSender is the concrete Cloud API implementation. It only accepts
+// the already validated template request, never free-form message content.
+type MetaCloudSender struct {
+	Config MetaCloudConfig
+	Client *http.Client
+}
+
+func NewMetaCloudSender(config MetaCloudConfig, client *http.Client) *MetaCloudSender {
+	if config.Timeout <= 0 || config.Timeout > 120*time.Second {
+		config.Timeout = 10 * time.Second
+	}
+	if config.Attempts < 1 || config.Attempts > 3 {
+		config.Attempts = 3
+	}
+	if client == nil {
+		client = &http.Client{Timeout: config.Timeout}
+	}
+	return &MetaCloudSender{Config: config, Client: client}
+}
+
+func (s *MetaCloudSender) Send(ctx context.Context, request MetaCloudTemplateRequest) error {
+	if s == nil || !s.Config.Enabled || strings.TrimSpace(s.Config.AccessToken) == "" || strings.TrimSpace(s.Config.PhoneNumberID) == "" {
+		return errors.New("whatsapp provider is not configured")
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return errors.New("whatsapp request could not be encoded")
+	}
+	endpoint := strings.TrimSpace(s.Config.Endpoint)
+	if endpoint == "" {
+		endpoint = MetaCloudEndpoint(s.Config)
+	}
+	for attempt := 0; attempt < s.Config.Attempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
+		if err != nil {
+			return errors.New("whatsapp request could not be created")
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+s.Config.AccessToken)
+		resp, err := s.Client.Do(req)
+		if err == nil {
+			io.CopyN(io.Discard, resp.Body, 4096)
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+			if ClassifyRetry(resp.StatusCode, nil) != RetryTransient || attempt == s.Config.Attempts-1 {
+				return RedactProviderError(resp.StatusCode)
+			}
+		} else if attempt == s.Config.Attempts-1 {
+			return RedactProviderError(0)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+		}
+	}
+	return RedactProviderError(0)
+}
+
+// VerifyMetaSignature validates Meta's X-Hub-Signature-256 over the exact
+// request bytes. It uses constant-time comparison and never logs the secret.
+func VerifyMetaSignature(body []byte, header, appSecret string) bool {
+	header = strings.TrimSpace(header)
+	if appSecret == "" || !strings.HasPrefix(header, "sha256=") {
+		return false
+	}
+	digest := hmac.New(sha256.New, []byte(appSecret))
+	digest.Write(body)
+	expected := "sha256=" + hex.EncodeToString(digest.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(header))
+}
+
+func VerifyMetaWebhookToken(provided, expected string) bool {
+	if provided == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+type webhookEnvelope struct {
+	Entry []struct {
+		Changes []struct {
+			Value struct {
+				Statuses []MetaStatus `json:"statuses"`
+			} `json:"value"`
+		} `json:"changes"`
+	} `json:"entry"`
+}
+
+type MetaStatus struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Timestamp string `json:"timestamp"`
+}
+
+// StatusHandler is called once for each status ID. Returning an error causes
+// the ID not to be marked handled, allowing a later delivery to retry it.
+type StatusHandler func(context.Context, MetaStatus) error
+
+type WebhookProcessor struct {
+	Handler StatusHandler
+	TTL     time.Duration
+	Max     int
+	mu      sync.Mutex
+	seen    map[string]time.Time
+}
+
+func NewWebhookProcessor(handler StatusHandler) *WebhookProcessor {
+	return &WebhookProcessor{Handler: handler, TTL: 24 * time.Hour, Max: 4096, seen: make(map[string]time.Time)}
+}
+
+func (p *WebhookProcessor) Process(ctx context.Context, body []byte) error {
+	var envelope webhookEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return errors.New("invalid whatsapp webhook")
+	}
+	for _, entry := range envelope.Entry {
+		for _, change := range entry.Changes {
+			for _, status := range change.Value.Statuses {
+				if strings.TrimSpace(status.ID) == "" {
+					continue
+				}
+				if !p.claim(status.ID) {
+					continue
+				}
+				if p.Handler != nil {
+					if err := p.Handler(ctx, status); err != nil {
+						p.unclaim(status.ID)
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (p *WebhookProcessor) claim(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	for key, at := range p.seen {
+		if now.Sub(at) > p.TTL {
+			delete(p.seen, key)
+		}
+	}
+	if _, ok := p.seen[id]; ok {
+		return false
+	}
+	if p.Max <= 0 {
+		p.Max = 4096
+	}
+	if len(p.seen) >= p.Max {
+		for key := range p.seen {
+			delete(p.seen, key)
+			break
+		}
+	}
+	p.seen[id] = now
+	return true
+}
+
+func (p *WebhookProcessor) unclaim(id string) { p.mu.Lock(); delete(p.seen, id); p.mu.Unlock() }

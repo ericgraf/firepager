@@ -80,6 +80,11 @@ func createSchema() {
 		password_hash VARCHAR(255) NOT NULL,
 		name VARCHAR(100) NOT NULL,
 		phone_number VARCHAR(20) NOT NULL,
+		phone_verification_status VARCHAR(20) NOT NULL DEFAULT 'unverified',
+		phone_verified_at TIMESTAMP NULL,
+		whatsapp_consented BOOLEAN NOT NULL DEFAULT FALSE,
+		whatsapp_consent_at TIMESTAMP NULL,
+		whatsapp_consent_policy_version VARCHAR(50) NULL,
 		capcodes TEXT[] NOT NULL,
 		vehicles TEXT[] DEFAULT '{}',
 		stations TEXT[] DEFAULT '{}',
@@ -136,6 +141,22 @@ func createSchema() {
 
 		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='invited_by') THEN
 			ALTER TABLE users ADD COLUMN invited_by INTEGER REFERENCES users(id);
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone_verification_status') THEN
+			ALTER TABLE users ADD COLUMN phone_verification_status VARCHAR(20) NOT NULL DEFAULT 'unverified';
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone_verified_at') THEN
+			ALTER TABLE users ADD COLUMN phone_verified_at TIMESTAMP NULL;
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='whatsapp_consented') THEN
+			ALTER TABLE users ADD COLUMN whatsapp_consented BOOLEAN NOT NULL DEFAULT FALSE;
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='whatsapp_consent_at') THEN
+			ALTER TABLE users ADD COLUMN whatsapp_consent_at TIMESTAMP NULL;
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='whatsapp_consent_policy_version') THEN
+			ALTER TABLE users ADD COLUMN whatsapp_consent_policy_version VARCHAR(50) NULL;
 		END IF;
 
 		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='invites' AND column_name='expires_at') THEN
@@ -199,6 +220,44 @@ func createSchema() {
 		address VARCHAR(255) NOT NULL,
 		enabled BOOLEAN NOT NULL DEFAULT TRUE,
 		UNIQUE (user_id, type, address)
+	);
+	CREATE TABLE IF NOT EXISTS notification_deliveries (
+		id BIGSERIAL PRIMARY KEY,
+		message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		-- Deliberately not an FK: subscription edits replace channel rows, while
+		-- accepted outbox items retain their channel snapshot.
+		channel_id INTEGER NOT NULL,
+		channel_type VARCHAR(20) NOT NULL,
+		address VARCHAR(255) NOT NULL,
+		status VARCHAR(20) NOT NULL DEFAULT 'pending',
+		attempts INTEGER NOT NULL DEFAULT 0,
+		available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		lease_until TIMESTAMP NULL,
+		last_error TEXT,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE (message_id, channel_id)
+	);
+	CREATE INDEX IF NOT EXISTS notification_deliveries_claim_idx ON notification_deliveries (status, available_at, lease_until);
+	CREATE TABLE IF NOT EXISTS phone_verification_challenges (
+		id BIGSERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		phone_number VARCHAR(20) NOT NULL,
+		code_hash VARCHAR(255) NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		expires_at TIMESTAMP NOT NULL,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		consumed_at TIMESTAMP NULL
+	);
+	CREATE INDEX IF NOT EXISTS phone_verification_user_created_idx ON phone_verification_challenges (user_id, created_at DESC);
+	CREATE TABLE IF NOT EXISTS whatsapp_consent_audit (
+		id BIGSERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		phone_number VARCHAR(20) NOT NULL,
+		consented BOOLEAN NOT NULL,
+		policy_version VARCHAR(50) NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 	-- Query indexes for the high-volume message list and time-window metrics.
 	CREATE INDEX IF NOT EXISTS messages_timestamp_id_idx ON messages (timestamp DESC, id DESC);
@@ -270,11 +329,22 @@ func SaveMessage(msg *models.Message) error {
 	query := `INSERT INTO messages (
 		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
 	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
-	_, err := DB.Exec(query,
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(query,
 		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.RawText, msg.Type,
 		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles),
 		msg.Address, msg.Intersection, msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
-	return err
+	if err != nil {
+		return err
+	}
+	if err = enqueueMatchingDeliveries(tx, msg); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func GetMessages() ([]models.Message, error) {
@@ -430,6 +500,8 @@ func GetUsers() ([]models.User, error) {
 			u.email,
 			u.name,
 			u.phone_number,
+			u.phone_verification_status, u.phone_verified_at,
+			u.whatsapp_consented, u.whatsapp_consent_at, u.whatsapp_consent_policy_version,
 			u.capcodes,
 			u.vehicles,
 			u.stations,
@@ -453,7 +525,8 @@ func GetUsers() ([]models.User, error) {
 	for rows.Next() {
 		var u models.User
 		if err := rows.Scan(
-			&u.ID, &u.Email, &u.Name, &u.PhoneNumber,
+			&u.ID, &u.Email, &u.Name, &u.PhoneNumber, &u.PhoneVerificationStatus, &u.PhoneVerifiedAt,
+			&u.WhatsAppConsented, &u.WhatsAppConsentAt, &u.WhatsAppConsentPolicyVersion,
 			pq.Array(&u.Capcodes),
 			pq.Array(&u.Vehicles),
 			pq.Array(&u.Stations),
@@ -474,6 +547,11 @@ func GetUsers() ([]models.User, error) {
 
 func AddUser(u *models.User) error {
 	normalizeUserArrays(u)
+	phone, err := NormalizeE164(u.PhoneNumber)
+	if err != nil {
+		return err
+	}
+	u.PhoneNumber = phone
 
 	query := "INSERT INTO users (email, password_hash, name, phone_number, capcodes, vehicles, stations, call_types, role, notification_types, pushover_user_key, pushover_app_token, invited_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id"
 	return DB.QueryRow(query,
@@ -499,6 +577,8 @@ func GetUserByEmail(email string) (*models.User, error) {
 			u.password_hash,
 			u.name,
 			u.phone_number,
+			u.phone_verification_status, u.phone_verified_at,
+			u.whatsapp_consented, u.whatsapp_consent_at, u.whatsapp_consent_policy_version,
 			u.capcodes,
 			u.vehicles,
 			u.stations,
@@ -514,7 +594,8 @@ func GetUserByEmail(email string) (*models.User, error) {
 		WHERE u.email = $1
 	`
 	err := DB.QueryRow(query, email).Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.PhoneNumber,
+		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.PhoneNumber, &u.PhoneVerificationStatus, &u.PhoneVerifiedAt,
+		&u.WhatsAppConsented, &u.WhatsAppConsentAt, &u.WhatsAppConsentPolicyVersion,
 		pq.Array(&u.Capcodes),
 		pq.Array(&u.Vehicles),
 		pq.Array(&u.Stations),
@@ -541,6 +622,8 @@ func GetUserByID(id int) (*models.User, error) {
 			u.password_hash,
 			u.name,
 			u.phone_number,
+			u.phone_verification_status, u.phone_verified_at,
+			u.whatsapp_consented, u.whatsapp_consent_at, u.whatsapp_consent_policy_version,
 			u.capcodes,
 			u.vehicles,
 			u.stations,
@@ -556,7 +639,8 @@ func GetUserByID(id int) (*models.User, error) {
 		WHERE u.id = $1
 	`
 	err := DB.QueryRow(query, id).Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.PhoneNumber,
+		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.PhoneNumber, &u.PhoneVerificationStatus, &u.PhoneVerifiedAt,
+		&u.WhatsAppConsented, &u.WhatsAppConsentAt, &u.WhatsAppConsentPolicyVersion,
 		pq.Array(&u.Capcodes),
 		pq.Array(&u.Vehicles),
 		pq.Array(&u.Stations),
@@ -576,12 +660,25 @@ func GetUserByID(id int) (*models.User, error) {
 
 func UpdateUser(u *models.User) error {
 	normalizeUserArrays(u)
+	phone, err := NormalizeE164(u.PhoneNumber)
+	if err != nil {
+		return err
+	}
+	var oldPhone string
+	if err := DB.QueryRow(`SELECT phone_number FROM users WHERE id=$1`, u.ID).Scan(&oldPhone); err != nil {
+		return err
+	}
+	phoneChanged := phone != oldPhone
+	u.PhoneNumber = phone
 
 	query := `UPDATE users SET 
 		email = $1, name = $2, phone_number = $3, 
 		capcodes = $4, vehicles = $5, stations = $6, 
 		call_types = $7, notification_types = $8,
 		pushover_user_key = $9, pushover_app_token = $10`
+	if phoneChanged {
+		query += ", phone_verification_status = 'unverified', phone_verified_at = NULL, whatsapp_consented = FALSE, whatsapp_consent_at = NULL, whatsapp_consent_policy_version = NULL"
+	}
 
 	params := []interface{}{
 		u.Email, u.Name, u.PhoneNumber,
@@ -598,7 +695,7 @@ func UpdateUser(u *models.User) error {
 		params = append(params, u.ID)
 	}
 
-	_, err := DB.Exec(query, params...)
+	_, err = DB.Exec(query, params...)
 	return err
 }
 
@@ -779,6 +876,11 @@ func RevokeInvite(id, userID int, admin bool) error {
 // AddUserWithInvite atomically locks and consumes an invite before inserting the user.
 func AddUserWithInvite(u *models.User, code string) error {
 	normalizeUserArrays(u)
+	phone, err := NormalizeE164(u.PhoneNumber)
+	if err != nil {
+		return err
+	}
+	u.PhoneNumber = phone
 	tx, err := DB.Begin()
 	if err != nil {
 		return err

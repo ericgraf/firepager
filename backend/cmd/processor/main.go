@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -15,6 +16,7 @@ func main() {
 	time.Sleep(5 * time.Second)
 
 	db.InitDB()
+	go mq.RunNotificationWorker(context.Background())
 
 	// Run consumer
 	for {

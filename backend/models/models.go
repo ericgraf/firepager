@@ -30,21 +30,26 @@ type MessagePage struct {
 }
 
 type User struct {
-	ID                int      `json:"id"`
-	Email             string   `json:"email"`
-	PasswordHash      string   `json:"-"`
-	Name              string   `json:"name"`
-	PhoneNumber       string   `json:"phone_number"`
-	Capcodes          []string `json:"capcodes"` // Relevant POCSAG CAPCODEs
-	Vehicles          []string `json:"vehicles"`
-	Stations          []string `json:"stations"`
-	CallTypes         []string `json:"call_types"`
-	Role              string   `json:"role"`
-	NotificationTypes []string `json:"notification_types"`
-	PushoverUserKey   string   `json:"pushover_user_key"`
-	PushoverAppToken  string   `json:"pushover_app_token"`
-	InvitedBy         *int     `json:"invited_by"`
-	InvitedByName     string   `json:"invited_by_name,omitempty"`
+	ID                           int        `json:"id"`
+	Email                        string     `json:"email"`
+	PasswordHash                 string     `json:"-"`
+	Name                         string     `json:"name"`
+	PhoneNumber                  string     `json:"phone_number"`
+	PhoneVerificationStatus      string     `json:"phone_verification_status"`
+	PhoneVerifiedAt              *time.Time `json:"phone_verified_at,omitempty"`
+	WhatsAppConsented            bool       `json:"whatsapp_consented"`
+	WhatsAppConsentAt            *time.Time `json:"whatsapp_consent_at,omitempty"`
+	WhatsAppConsentPolicyVersion string     `json:"whatsapp_consent_policy_version,omitempty"`
+	Capcodes                     []string   `json:"capcodes"` // Relevant POCSAG CAPCODEs
+	Vehicles                     []string   `json:"vehicles"`
+	Stations                     []string   `json:"stations"`
+	CallTypes                    []string   `json:"call_types"`
+	Role                         string     `json:"role"`
+	NotificationTypes            []string   `json:"notification_types"`
+	PushoverUserKey              string     `json:"pushover_user_key"`
+	PushoverAppToken             string     `json:"pushover_app_token"`
+	InvitedBy                    *int       `json:"invited_by"`
+	InvitedByName                string     `json:"invited_by_name,omitempty"`
 }
 
 // SubscriptionRule is a dimension match for an alert. An empty station or
@@ -61,6 +66,24 @@ type NotificationChannel struct {
 	Type    string `json:"type"`
 	Address string `json:"address"`
 	Enabled bool   `json:"enabled"`
+}
+
+// NotificationDelivery is a durable, per-message/per-channel outbox item.
+// Address and channel type are snapshots so changing a subscription does not
+// change an already accepted delivery.
+type NotificationDelivery struct {
+	ID          int64      `json:"id"`
+	MessageID   string     `json:"message_id"`
+	UserID      int        `json:"user_id"`
+	ChannelID   int        `json:"channel_id"`
+	ChannelType string     `json:"channel_type"`
+	Address     string     `json:"address"`
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	AvailableAt time.Time  `json:"available_at"`
+	LeaseUntil  *time.Time `json:"lease_until,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	Message     Message    `json:"message"`
 }
 
 type SubscriptionSettings struct {

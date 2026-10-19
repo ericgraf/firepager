@@ -2,6 +2,7 @@ package mq
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/firepager/backend/models"
@@ -112,5 +113,17 @@ func TestMessageDecoding(t *testing.T) {
 				t.Errorf("Expected station %s, got %s", s.expected.Station, msg.Station)
 			}
 		})
+	}
+}
+
+func TestNotificationRetryClassification(t *testing.T) {
+	if retryableNotificationError(fmt.Errorf("email provider request failed (status 503)")) == false {
+		t.Fatal("expected server failures to retry")
+	}
+	if retryableNotificationError(fmt.Errorf("email provider request failed (status 400)")) {
+		t.Fatal("did not expect permanent client failures to retry")
+	}
+	if min(8, 6) != 6 {
+		t.Fatal("backoff cap helper is incorrect")
 	}
 }

@@ -1,7 +1,9 @@
 package mq
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -94,7 +96,6 @@ func StartConsumer() {
 			}
 		}
 
-		checkAlerts(&msg)
 		d.Ack(false)
 	}
 }
@@ -249,71 +250,53 @@ func summarizeBody(body []byte) string {
 	return text
 }
 
-func checkAlerts(msg *models.Message) {
-	users, err := db.GetUsers()
-	if err != nil {
-		log.Printf("Error getting users for alerts: %v", err)
-		return
-	}
-
-	for _, user := range users {
-		match := false
-
-		// Match Capcode
-		for _, c := range user.Capcodes {
-			if c == msg.Source {
-				match = true
-				break
-			}
+// RunNotificationWorker drains the database outbox independently of the
+// RabbitMQ consumer. Provider calls therefore never hold an AMQP delivery.
+func RunNotificationWorker(ctx context.Context) {
+	for {
+		if err := ProcessOneNotification(ctx); err != nil {
+			log.Printf("notification worker: %v", err)
 		}
-
-		if !match && msg.Type == "CALL" {
-			// Match Vehicle
-			for _, vSub := range user.Vehicles {
-				for _, vInMsg := range msg.Vehicles {
-					if strings.EqualFold(vSub, vInMsg) {
-						match = true
-						break
-					}
-				}
-				if match {
-					break
-				}
-			}
-
-			// Match Station
-			if !match {
-				// We should check all stations for all vehicles in the call
-				stations := extractAllStations(msg.Vehicles)
-				for _, sSub := range user.Stations {
-					for _, sInMsg := range stations {
-						if sSub == sInMsg {
-							match = true
-							break
-						}
-					}
-					if match {
-						break
-					}
-				}
-			}
-
-			// Match Call Type
-			if !match {
-				for _, ctSub := range user.CallTypes {
-					if strings.Contains(strings.ToUpper(msg.CallType), strings.ToUpper(ctSub)) {
-						match = true
-						break
-					}
-				}
-			}
-		}
-
-		if match {
-			log.Printf("ALERT: User %s notified for message %s", user.Email, msg.ID)
-			notifications.SendNotification(&user, msg)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func ProcessOneNotification(ctx context.Context) error {
+	delivery, err := db.ClaimNotificationDelivery(2 * time.Minute)
+	if err != nil || delivery == nil {
+		return err
+	}
+	err = notifications.Deliver(ctx, delivery.ChannelType, delivery.Address, &delivery.Message)
+	if err == nil {
+		return db.CompleteNotificationDelivery(delivery.ID)
+	}
+	// A disabled/unconfigured channel is a terminal state: retrying it forever
+	// would create noise and prevent other deliveries from being claimed.
+	dead := errors.Is(err, notifications.ErrProviderDisabled) || delivery.Attempts >= 5 || !retryableNotificationError(err)
+	backoff := time.Duration(1<<min(delivery.Attempts, 6)) * time.Second
+	if dead {
+		backoff = 0
+	}
+	return db.FailNotificationDelivery(delivery.ID, err.Error(), time.Now().Add(backoff), dead)
+}
+
+func retryableNotificationError(err error) bool {
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "status 4") && !strings.Contains(text, "status 408") && !strings.Contains(text, "status 429") {
+		return false
+	}
+	return true
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func extractAllStations(vehicles []string) []string {

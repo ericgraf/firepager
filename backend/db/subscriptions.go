@@ -46,6 +46,17 @@ func SaveSubscriptionSettings(userID int, settings *models.SubscriptionSettings)
 		return err
 	}
 	defer tx.Rollback()
+	for _, channel := range settings.Channels {
+		if channel.Type == "whatsapp" && channel.Enabled {
+			var verified, consented bool
+			if err = tx.QueryRow(`SELECT phone_verification_status='verified', whatsapp_consented FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&verified, &consented); err != nil {
+				return err
+			}
+			if !verified || !consented {
+				return ErrWhatsAppNotEligible
+			}
+		}
+	}
 	if _, err = tx.Exec(`INSERT INTO user_subscription_settings (user_id, enabled) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled`, userID, settings.Enabled); err != nil {
 		return err
 	}

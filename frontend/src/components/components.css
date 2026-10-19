@@ -28,6 +28,26 @@
   margin-bottom: 16px;
 }
 
+.delivery-status {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.delivery-status h4 {
+  margin: 0 0 8px;
+}
+
+.delivery-status ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.delivery-status li {
+  margin: 4px 0;
+}
+
 @media (prefers-color-scheme: dark) {
   .error {
     background: #450a0a;

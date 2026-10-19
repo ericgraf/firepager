@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/firepager/backend/db"
 	"github.com/firepager/backend/models"
+	"github.com/firepager/backend/notifications"
 	"github.com/gin-gonic/gin"
 )
 
@@ -35,6 +37,15 @@ func SetupRouter() *gin.Engine {
 			protected.GET("/metrics", getMetrics)
 			protected.GET("/profile", GetProfileHandler)
 			protected.PUT("/profile", UpdateProfileHandler)
+			protected.POST("/profile/phone/verify", RequestPhoneVerificationHandler)
+			protected.POST("/profile/phone/verify/resend", RequestPhoneVerificationHandler)
+			protected.POST("/profile/phone/verify/confirm", ConfirmPhoneVerificationHandler)
+			protected.POST("/profile/phone/verification", RequestPhoneVerificationHandler)
+			protected.POST("/profile/phone/verification/confirm", ConfirmPhoneVerificationHandler)
+			protected.POST("/profile/phone/resend", RequestPhoneVerificationHandler)
+			protected.POST("/profile/whatsapp/consent", GrantWhatsAppConsentHandler)
+			protected.DELETE("/profile/whatsapp/consent", RevokeWhatsAppConsentHandler)
+			protected.POST("/profile/whatsapp/consent/revoke", RevokeWhatsAppConsentHandler)
 			protected.GET("/profile/subscriptions", GetSubscriptionSettingsHandler)
 			protected.PUT("/profile/subscriptions", UpdateSubscriptionSettingsHandler)
 			protected.GET("/profile/subscriptions/catalog", GetSubscriptionCatalogHandler)
@@ -57,8 +68,42 @@ func SetupRouter() *gin.Engine {
 			}
 		}
 	}
+	// This endpoint is intentionally public: Meta cannot authenticate with the
+	// application's user JWT. Both webhook methods have their own verification.
+	whatsappProcessor := notifications.NewWebhookProcessor(nil)
+	r.GET("/webhooks/whatsapp", func(c *gin.Context) { WhatsAppWebhookGET(c, notifications.ParseMetaCloudConfig(nil)) })
+	r.POST("/webhooks/whatsapp", func(c *gin.Context) {
+		WhatsAppWebhookPOST(c, notifications.ParseMetaCloudConfig(nil), whatsappProcessor)
+	})
 
 	return r
+}
+
+// WhatsAppWebhookGET implements Meta's signed-initial-subscription challenge.
+func WhatsAppWebhookGET(c *gin.Context, config notifications.MetaCloudConfig) {
+	if c.Query("hub.mode") != "subscribe" || !notifications.VerifyMetaWebhookToken(c.Query("hub.verify_token"), config.VerifyToken) || c.Query("hub.challenge") == "" {
+		c.Status(http.StatusForbidden)
+		return
+	}
+	c.String(http.StatusOK, c.Query("hub.challenge"))
+}
+
+// WhatsAppWebhookPOST validates the raw body before parsing or handling any
+// status. The body is bounded to avoid allowing a webhook to consume memory.
+func WhatsAppWebhookPOST(c *gin.Context, config notifications.MetaCloudConfig, processor *notifications.WebhookProcessor) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 2<<20))
+	if err != nil || len(body) == 0 || !notifications.VerifyMetaSignature(body, c.GetHeader("X-Hub-Signature-256"), config.AppSecret) {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	if processor == nil {
+		processor = notifications.NewWebhookProcessor(nil)
+	}
+	if err := processor.Process(c.Request.Context(), body); err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	c.Status(http.StatusOK)
 }
 
 func getConfigs(c *gin.Context) {

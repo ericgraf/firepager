@@ -17,6 +17,9 @@ interface UserProfile {
   pushover_app_token: string;
   invited_by: number | null;
   invited_by_name?: string;
+  phone_verification_status?: string;
+  whatsapp_consented?: boolean;
+  whatsapp_consent_policy_version?: string;
 }
 
 interface Invite {
@@ -191,6 +194,9 @@ type Catalog = {
 
 type Provider = { type: string; label: string; description: string; normalized: boolean };
 type ChannelRecord = { type: string; address?: string; enabled?: boolean; verified?: boolean };
+type ChannelEligibility = { id?: string; type?: string; configured?: boolean; verified?: boolean; disabled?: boolean; eligible?: boolean; usable?: boolean; delivery_implemented?: boolean };
+type WhatsAppStatus = { phone_masked?: string; verified?: boolean; consent?: boolean; eligible?: boolean; status?: string };
+type DeliveryRecord = { status?: string; state?: string; created_at?: string; sent_at?: string; updated_at?: string; error?: string };
 
 const PROVIDERS: Provider[] = [
   { type: 'sms', label: 'SMS', description: 'Text messages to your profile phone.', normalized: true },
@@ -218,6 +224,15 @@ const uniqueStrings = (items: unknown): string[] => Array.isArray(items)
   ? [...new Set(items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()))]
   : [];
 
+function maskPhone(phone: string) {
+  const digits = phone.replace(/\D/g, '');
+  return digits.length > 4 ? `${phone.trim().startsWith('+') ? '+' : ''}${'•'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}` : phone || 'No phone number configured';
+}
+
+function safeError(response: Response, fallback: string) {
+  return response.status === 401 || response.status === 403 ? 'You are not authorized to perform this action.' : fallback;
+}
+
 function SubscriptionSettings({
   token,
   initialValues,
@@ -225,6 +240,7 @@ function SubscriptionSettings({
   phoneNumber,
   email,
   pushoverConfigured,
+  backendEligible,
 }: {
   token: string | null;
   initialValues: SubscriptionValues;
@@ -232,6 +248,7 @@ function SubscriptionSettings({
   phoneNumber: string;
   email: string;
   pushoverConfigured: boolean;
+  backendEligible: boolean;
 }) {
   const [values, setValues] = useState<SubscriptionValues>(initialValues);
   const [channels, setChannels] = useState<string[]>(initialChannels.map((channel) => channel.toLowerCase()).filter((channel) => CHANNEL_LABELS[channel]));
@@ -243,9 +260,18 @@ function SubscriptionSettings({
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [whatsappConsent, setWhatsappConsent] = useState(false);
+  const [whatsappConsent, setWhatsappConsent] = useState(backendEligible);
+  const [policyAccepted, setPolicyAccepted] = useState(backendEligible);
   const [verificationCode, setVerificationCode] = useState('');
   const [verificationRequested, setVerificationRequested] = useState(false);
+  const [verificationBusy, setVerificationBusy] = useState(false);
+  const [whatsappEligibility, setWhatsappEligibility] = useState<ChannelEligibility | null>(null);
+  const [whatsappStatus, setWhatsappStatus] = useState<WhatsAppStatus | null>(null);
+  const [delivery, setDelivery] = useState<DeliveryRecord[]>([]);
+  const [deliveryError, setDeliveryError] = useState('');
+  const [testAvailable, setTestAvailable] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const policyVersion = '2026-01';
 
   useEffect(() => {
     let cancelled = false;
@@ -280,11 +306,13 @@ function SubscriptionSettings({
           const data = await catalogResponse.json();
           const source = data.catalog || data;
            const entries = (items: unknown): CatalogEntry[] => Array.isArray(items) ? items.map((item) => typeof item === 'string' ? { code: item, label: item } : item as CatalogEntry).filter((item) => item?.code) : [];
-           setCatalog({
+            setCatalog({
              stations: entries(source.stations),
              call_types: entries(source.call_types ?? source.callTypes ?? source.call_types_catalog),
-           });
-        }
+            });
+            const channel = (Array.isArray(source.channels) ? source.channels : []).find((item: ChannelEligibility) => (item.id || item.type)?.toLowerCase() === 'whatsapp');
+            setWhatsappEligibility(channel || null);
+         }
       } catch {
         // The catalog is optional: manually entered values remain usable when the API is unavailable.
       } finally {
@@ -292,6 +320,49 @@ function SubscriptionSettings({
       }
     };
     load();
+    return () => { cancelled = true; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    const loadWhatsApp = async () => {
+      const headers = { Authorization: `Bearer ${token}` };
+      const statusPaths = ['/api/profile/whatsapp/status', '/api/profile/subscriptions/whatsapp/status'];
+      for (const path of statusPaths) {
+        try {
+          const response = await fetch(path, { headers });
+          if (response.status === 404 || response.status === 405) continue;
+          if (response.ok) {
+            const data = await response.json();
+            if (!cancelled) setWhatsappStatus(data.status || data);
+          }
+          break;
+        } catch { break; }
+      }
+      const deliveryPaths = ['/api/profile/whatsapp/deliveries', '/api/profile/whatsapp/delivery-status'];
+      for (const path of deliveryPaths) {
+        try {
+          const response = await fetch(path, { headers });
+          if (response.status === 404 || response.status === 405) continue;
+          if (!response.ok) { if (!cancelled) setDeliveryError(safeError(response, 'Recent WhatsApp delivery status is unavailable.')); break; }
+          const data = await response.json();
+          const records = Array.isArray(data) ? data : (data.deliveries || data.items || []);
+          if (!cancelled) setDelivery(Array.isArray(records) ? records.slice(0, 5) : []);
+          break;
+        } catch { if (!cancelled) setDeliveryError('Recent WhatsApp delivery status is unavailable.'); break; }
+      }
+      const testPaths = ['/api/profile/whatsapp/test', '/api/profile/subscriptions/whatsapp/test'];
+      for (const path of testPaths) {
+        try {
+          const response = await fetch(path, { headers });
+          if (response.status === 404) continue;
+          if (!cancelled) setTestAvailable(response.ok || response.status === 405);
+          break;
+        } catch { break; }
+      }
+    };
+    loadWhatsApp();
     return () => { cancelled = true; };
   }, [token]);
 
@@ -312,7 +383,7 @@ function SubscriptionSettings({
     const payload = {
       enabled: true,
       rules,
-      channels: channels.filter((type) => PROVIDERS.find((provider) => provider.type === type)?.normalized).map((type) => ({ type, address: addressFor(type), enabled: true })),
+       channels: channels.filter((type) => PROVIDERS.find((provider) => provider.type === type)?.normalized && (type !== 'whatsapp' || whatsappEligible)).map((type) => ({ type, address: addressFor(type), enabled: true })),
     };
     try {
       let response = await fetch('/api/profile/subscriptions', {
@@ -351,9 +422,51 @@ function SubscriptionSettings({
     setDirty(true);
   };
 
-  const requestVerification = () => {
-    setVerificationRequested(true);
-    setNotice('Verification is not connected in this release. No message was sent.');
+  const whatsappEligible = Boolean((backendEligible || whatsappEligibility?.configured || whatsappEligibility?.usable || whatsappEligibility?.eligible) && !whatsappEligibility?.disabled);
+  const whatsappVerified = Boolean(backendEligible || whatsappStatus?.verified || whatsappEligibility?.verified || channelRecords.find((record) => record.type.toLowerCase() === 'whatsapp')?.verified);
+
+  const requestVerification = async () => {
+    if (!whatsappConsent || !policyAccepted || !phoneNumber || !whatsappEligible) return;
+    setVerificationBusy(true); setError(''); setNotice('');
+    try {
+      let response: Response | null = null;
+      for (const path of ['/api/profile/phone/verify', '/api/profile/phone/verify/resend', '/api/profile/whatsapp/verification/start', '/api/profile/whatsapp/verify/start']) {
+        response = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ phone_number: phoneNumber, consent: true }) });
+        if (response.status !== 404 && response.status !== 405) break;
+      }
+      if (!response || !response.ok) throw new Error(response ? safeError(response, 'Unable to start WhatsApp verification.') : 'Unable to start WhatsApp verification.');
+      setVerificationRequested(true); setNotice('A verification code was sent to your WhatsApp number.');
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Unable to start WhatsApp verification.'); }
+    finally { setVerificationBusy(false); }
+  };
+
+  const confirmVerification = async () => {
+    if (!verificationCode.trim() || !whatsappConsent || !policyAccepted || !whatsappEligible) return;
+    setVerificationBusy(true); setError(''); setNotice('');
+    try {
+      let response: Response | null = null;
+      for (const path of ['/api/profile/phone/verify/confirm', '/api/profile/whatsapp/verification/confirm', '/api/profile/whatsapp/verify/confirm']) {
+        response = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: verificationCode.trim(), consent: true }) });
+        if (response.status !== 404 && response.status !== 405) break;
+      }
+      if (!response || !response.ok) throw new Error(response ? safeError(response, 'The verification code could not be confirmed.') : 'The verification code could not be confirmed.');
+      setWhatsappStatus((current) => ({ ...current, verified: true, consent: true })); setNotice('WhatsApp is verified.'); setVerificationCode('');
+    } catch (confirmError) { setError(confirmError instanceof Error ? confirmError.message : 'The verification code could not be confirmed.'); }
+    finally { setVerificationBusy(false); }
+  };
+
+  const sendTestAlert = async () => {
+    setTestBusy(true); setError(''); setNotice('');
+    try {
+      let response: Response | null = null;
+      for (const path of ['/api/profile/whatsapp/test', '/api/profile/subscriptions/whatsapp/test']) {
+        response = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ consent: true }) });
+        if (response.status !== 404 && response.status !== 405) break;
+      }
+      if (!response || !response.ok) throw new Error(response ? safeError(response, 'The test alert could not be sent.') : 'The test alert endpoint is not available.');
+      setNotice('Test alert requested. Check recent delivery status for the result.');
+    } catch (testError) { setError(testError instanceof Error ? testError.message : 'The test alert could not be sent.'); }
+    finally { setTestBusy(false); }
   };
 
   const toggleCatalog = (key: 'stations' | 'call_types', code: string) => {
@@ -363,12 +476,14 @@ function SubscriptionSettings({
   const filtered = (key: 'stations' | 'call_types') => catalog[key].filter((entry) => `${entry.label} ${entry.code}`.toLowerCase().includes(search[key].toLowerCase()));
   const providerStatus = (provider: Provider) => {
     const record = channelRecords.find((channel) => channel.type.toLowerCase() === provider.type);
-    if (record?.verified) return { label: 'Verified', className: 'verified' };
+     if (provider.type === 'whatsapp' && whatsappVerified) return { label: 'Verified', className: 'verified' };
+     if (record?.verified) return { label: 'Verified', className: 'verified' };
     if (record?.enabled && record.address) return { label: 'Configured', className: 'configured' };
     if (provider.type === 'sms' && phoneNumber) return { label: 'Available', className: 'available' };
     if (provider.type === 'email' && email) return { label: 'Available', className: 'available' };
     if (provider.type === 'pushover' && pushoverConfigured) return { label: 'Configured (legacy)', className: 'configured' };
-    if (provider.type === 'whatsapp' && phoneNumber) return { label: 'Verification required', className: 'pending' };
+     if (provider.type === 'whatsapp' && !whatsappEligible) return { label: 'Unavailable', className: 'unsupported' };
+     if (provider.type === 'whatsapp' && phoneNumber) return { label: 'Verification required', className: 'pending' };
     if (provider.normalized && provider.type === 'push') return { label: 'Browser setup required', className: 'pending' };
     return { label: 'Unsupported', className: 'unsupported' };
   };
@@ -412,7 +527,7 @@ function SubscriptionSettings({
               const status = providerStatus(provider);
               const selectable = provider.normalized || provider.type === 'pushover';
               return <label className={`channel-option ${status.className}`} key={provider.type}>
-                <input type="checkbox" checked={channels.includes(provider.type)} onChange={() => toggleChannel(provider.type)} disabled={!selectable || (provider.type === 'whatsapp' && !phoneNumber)} />
+               <input type="checkbox" checked={channels.includes(provider.type)} onChange={() => toggleChannel(provider.type)} disabled={!selectable || (provider.type === 'whatsapp' && (!phoneNumber || !whatsappEligible || !whatsappVerified))} />
                 <span><strong>{provider.label}</strong><small>{CHANNEL_HELP[provider.type] || provider.description}</small><small className="provider-status">{status.label}{channels.includes(provider.type) ? ' · Selected' : ''}</small></span>
               </label>
             })}
@@ -420,13 +535,25 @@ function SubscriptionSettings({
         </fieldset>
 
         <div className="whatsapp-panel">
-          <div><h3>WhatsApp verification</h3><p className="small-text">Verification is required before WhatsApp delivery can be enabled.</p></div>
-          <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => { setWhatsappConsent(event.target.checked); setDirty(true); }} /> <span>I consent to receiving FirePager alerts on WhatsApp at <strong>{phoneNumber || 'the phone number on my profile'}</strong>.</span></label>
-          <div className="verification-controls">
-            <button type="button" onClick={requestVerification} disabled={!whatsappConsent || !phoneNumber || verificationRequested}>Request verification code</button>
-            <label className="sr-only" htmlFor="whatsapp-code">WhatsApp verification code</label><input id="whatsapp-code" inputMode="numeric" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="Code (when received)" disabled={!verificationRequested} />
-          </div>
-          <p className="small-text">No message is sent by this screen yet; this is a consent and verification-ready scaffold.</p>
+           <div><h3>WhatsApp setup</h3><p className="small-text">Number on file: <strong>{whatsappStatus?.phone_masked || maskPhone(phoneNumber)}</strong></p><p className="small-text">{whatsappEligible ? 'This service is available for your account.' : 'WhatsApp is unavailable until the service is enabled and eligible by the server.'}</p></div>
+           <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => { setWhatsappConsent(event.target.checked); setDirty(true); }} disabled={!whatsappEligible} /> <span>I consent to receiving FirePager alerts on WhatsApp at this number.</span></label>
+           <label className="consent-option"><input type="checkbox" checked={policyAccepted} onChange={async (event) => {
+             const accepted = event.target.checked;
+             setPolicyAccepted(accepted); setDirty(true);
+             if (!accepted) return;
+             try {
+               const response = await fetch('/api/profile/whatsapp/consent', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ policy_version: policyVersion }) });
+               if (!response.ok) throw new Error(safeError(response, 'Unable to save WhatsApp consent.'));
+               setWhatsappStatus((current) => ({ ...current, consent: true }));
+             } catch (consentError) { setPolicyAccepted(false); setError(consentError instanceof Error ? consentError.message : 'Unable to save WhatsApp consent.'); }
+           }} disabled={!whatsappEligible} /> <span>I have read and accept the <a href="/whatsapp-policy" target="_blank" rel="noreferrer">WhatsApp messaging policy</a>.</span></label>
+           <div className="verification-controls">
+             <button type="button" onClick={requestVerification} disabled={!whatsappConsent || !policyAccepted || !phoneNumber || !whatsappEligible || verificationRequested || verificationBusy}>{verificationBusy ? 'Working…' : 'Send verification code'}</button>
+             <label className="sr-only" htmlFor="whatsapp-code">WhatsApp verification code</label><input id="whatsapp-code" inputMode="numeric" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="Code (when received)" disabled={!verificationRequested} />
+             <button type="button" className="secondary-button" onClick={confirmVerification} disabled={!verificationRequested || !verificationCode.trim() || verificationBusy}>Confirm code</button>
+           </div>
+           {whatsappVerified && testAvailable && <button type="button" className="secondary-button" onClick={sendTestAlert} disabled={!whatsappEligible || testBusy}>{testBusy ? 'Sending…' : 'Send test alert'}</button>}
+           <div className="delivery-status"><h4>Recent WhatsApp delivery</h4>{deliveryError ? <p className="small-text">{deliveryError}</p> : delivery.length ? <ul>{delivery.map((item, index) => <li key={`${item.created_at || item.updated_at || index}`}><strong>{item.status || item.state || 'Unknown'}</strong>{(item.created_at || item.sent_at || item.updated_at) && <span> · {new Date(item.created_at || item.sent_at || item.updated_at || '').toLocaleString()}</span>}</li>)}</ul> : <p className="small-text">No recent delivery status is available.</p>}</div>
         </div>
 
         <div className="subscription-actions"><span className="small-text" aria-live="polite">{saving ? 'Saving your preferences…' : dirty ? 'Changes are not saved' : 'All changes saved'}</span><button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save subscription settings'}</button></div>
@@ -790,6 +917,7 @@ export function Profile() {
         phoneNumber={formData.phone_number}
         email={formData.email}
         pushoverConfigured={Boolean(formData.pushover_user_key && formData.pushover_app_token)}
+        backendEligible={profile?.phone_verification_status === 'verified' && Boolean(profile.whatsapp_consented)}
       />
     </div>
   );

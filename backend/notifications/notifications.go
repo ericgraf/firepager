@@ -16,6 +16,32 @@ import (
 	"github.com/firepager/backend/models"
 )
 
+var ErrProviderDisabled = fmt.Errorf("notification provider is disabled or not configured")
+
+// Deliver is the worker-only delivery boundary. It never falls back to the
+// legacy synchronous helpers and therefore cannot accidentally send during
+// RabbitMQ message ingestion.
+func Deliver(ctx context.Context, channel, recipient string, msg *models.Message) error {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	configs, err := db.GetConfigs()
+	if err != nil {
+		return ErrProviderDisabled
+	}
+	values := make(map[string]string, len(configs))
+	for _, c := range configs {
+		values[c.Key] = c.Value
+	}
+	cfg := ProviderConfigFromMap(values, channel)
+	if !cfg.Usable() {
+		return ErrProviderDisabled
+	}
+	return NewHTTPProvider(cfg).Send(ctx, NotificationRequest{
+		Provider: channel, Recipient: recipient,
+		Subject: fmt.Sprintf("Firepager Alert: %s #%s", msg.CallType, msg.IncidentNumber),
+		Body:    buildNotificationContent(msg), Metadata: map[string]string{"channel": channel},
+	})
+}
+
 // SendNotification sends alerts to a user based on their preferences
 func SendNotification(user *models.User, msg *models.Message) {
 	if len(user.NotificationTypes) == 0 {
@@ -155,10 +181,22 @@ func sendPushover(user *models.User, msg *models.Message) {
 }
 
 func sendWhatsApp(user *models.User, msg *models.Message) {
-	// The legacy Twilio path is intentionally inert. WhatsApp delivery must be
-	// wired through WhatsAppAdapter with an explicit provider and consent gate;
-	// this notification entry point has neither a consent record nor a provider.
-	log.Printf("WhatsApp requested, but WhatsApp delivery is not wired")
+	configs, err := db.GetConfigs()
+	if err != nil {
+		log.Printf("WhatsApp notification skipped: configuration unavailable")
+		return
+	}
+	values := make(map[string]string, len(configs))
+	for _, config := range configs {
+		values[config.Key] = config.Value
+	}
+	cfg := ParseMetaCloudConfig(values)
+	// Consent is stored on the user and is checked before constructing a
+	// provider request. Enabled remains false unless explicitly configured.
+	adapter := WhatsAppAdapter{Config: cfg, Provider: NewMetaCloudSender(cfg, nil)}
+	if err := adapter.SendTemplate(context.Background(), user.PhoneNumber, user.WhatsAppConsented, []string{buildWhatsAppContent(msg)}); err != nil {
+		log.Printf("WhatsApp notification skipped: %v", err)
+	}
 }
 
 func configEnabled(key string) bool {
