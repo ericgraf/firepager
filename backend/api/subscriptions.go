@@ -5,6 +5,7 @@ import (
 
 	"github.com/firepager/backend/db"
 	"github.com/firepager/backend/models"
+	"github.com/firepager/backend/notifications"
 	"github.com/gin-gonic/gin"
 )
 
@@ -42,5 +43,43 @@ func GetSubscriptionCatalogHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load subscription catalog"})
 		return
 	}
-	c.JSON(http.StatusOK, catalog)
+	configs, err := db.GetConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load notification provider catalog"})
+		return
+	}
+	configValues := make(map[string]string, len(configs))
+	for _, config := range configs {
+		configValues[config.Key] = config.Value
+	}
+	user, err := db.GetUserByID(c.MustGet("user_id").(int))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load notification provider catalog"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"stations":   catalog["stations"],
+		"call_types": catalog["call_types"],
+		"channels":   notifications.BuildChannelCatalog(configValues, user),
+	})
+}
+
+// GetNotificationChannelCatalogHandler is a focused alias for clients that do
+// not need the station and call-type subscription dimensions.
+func GetNotificationChannelCatalogHandler(c *gin.Context) {
+	configs, err := db.GetConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load notification provider catalog"})
+		return
+	}
+	configValues := make(map[string]string, len(configs))
+	for _, config := range configs {
+		configValues[config.Key] = config.Value
+	}
+	user, err := db.GetUserByID(c.MustGet("user_id").(int))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load notification provider catalog"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"channels": notifications.BuildChannelCatalog(configValues, user)})
 }

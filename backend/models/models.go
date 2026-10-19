@@ -74,6 +74,22 @@ type CatalogEntry struct {
 	Label string `json:"label"`
 }
 
+// NotificationChannelCatalog describes a channel without implying that it can
+// currently deliver. Supported is the product catalog, configured reflects
+// provider settings, and verified requires an explicit verification result.
+// Usable is intentionally stricter than configured: it is false for channels
+// whose delivery adapter has not been implemented.
+type NotificationChannelCatalog struct {
+	ID                  string `json:"id"`
+	Label               string `json:"label"`
+	Supported           bool   `json:"supported"`
+	Configured          bool   `json:"configured"`
+	Verified            bool   `json:"verified"`
+	Disabled            bool   `json:"disabled"`
+	DeliveryImplemented bool   `json:"delivery_implemented"`
+	Usable              bool   `json:"usable"`
+}
+
 type Invite struct {
 	ID            int        `json:"id"`
 	Code          string     `json:"code"`

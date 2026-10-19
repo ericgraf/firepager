@@ -182,13 +182,37 @@ type SubscriptionValues = {
   call_types: string[];
 };
 
+type CatalogEntry = { code: string; label: string };
+
 type Catalog = {
-  stations: string[];
-  call_types: string[];
-  channels: string[];
+  stations: CatalogEntry[];
+  call_types: CatalogEntry[];
 };
 
-const CHANNELS = ['SMS', 'WhatsApp', 'Email', 'Push', 'Pushover'];
+type Provider = { type: string; label: string; description: string; normalized: boolean };
+type ChannelRecord = { type: string; address?: string; enabled?: boolean; verified?: boolean };
+
+const PROVIDERS: Provider[] = [
+  { type: 'sms', label: 'SMS', description: 'Text messages to your profile phone.', normalized: true },
+  { type: 'email', label: 'Email', description: 'Email alerts to your profile address.', normalized: true },
+  { type: 'whatsapp', label: 'WhatsApp', description: 'Requires consent and service verification.', normalized: true },
+  { type: 'telegram', label: 'Telegram', description: 'Not available in this deployment.', normalized: false },
+  { type: 'signal', label: 'Signal', description: 'Not available in this deployment.', normalized: false },
+  { type: 'pushover', label: 'Pushover', description: 'Legacy profile channel; requires an app token and user key.', normalized: false },
+  { type: 'ntfy', label: 'ntfy', description: 'Not available in this deployment.', normalized: false },
+  { type: 'push', label: 'Web push', description: 'Requires a browser push subscription.', normalized: true },
+  { type: 'discord', label: 'Discord', description: 'Not available in this deployment.', normalized: false },
+  { type: 'slack', label: 'Slack', description: 'Not available in this deployment.', normalized: false },
+  { type: 'teams', label: 'Teams', description: 'Not available in this deployment.', normalized: false },
+  { type: 'voice', label: 'Voice call', description: 'Not available in this deployment.', normalized: false },
+];
+const CHANNEL_LABELS: Record<string, string> = Object.fromEntries(PROVIDERS.map((provider) => [provider.type, provider.label]));
+const CHANNEL_HELP: Record<string, string> = {
+  sms: 'Uses the phone number on your profile.',
+  whatsapp: 'Requires a phone number, consent, and service verification.',
+  email: 'Uses your profile email address.',
+  push: 'Available when a browser subscription is configured by the service.',
+};
 
 const uniqueStrings = (items: unknown): string[] => Array.isArray(items)
   ? [...new Set(items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()))]
@@ -199,17 +223,24 @@ function SubscriptionSettings({
   initialValues,
   initialChannels,
   phoneNumber,
+  email,
+  pushoverConfigured,
 }: {
   token: string | null;
   initialValues: SubscriptionValues;
   initialChannels: string[];
   phoneNumber: string;
+  email: string;
+  pushoverConfigured: boolean;
 }) {
   const [values, setValues] = useState<SubscriptionValues>(initialValues);
-  const [channels, setChannels] = useState<string[]>(initialChannels);
-  const [catalog, setCatalog] = useState<Catalog>({ stations: [], call_types: [], channels: CHANNELS });
+  const [channels, setChannels] = useState<string[]>(initialChannels.map((channel) => channel.toLowerCase()).filter((channel) => CHANNEL_LABELS[channel]));
+  const [catalog, setCatalog] = useState<Catalog>({ stations: [], call_types: [] });
+  const [channelRecords, setChannelRecords] = useState<ChannelRecord[]>([]);
+  const [search, setSearch] = useState({ stations: '', call_types: '' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [whatsappConsent, setWhatsappConsent] = useState(false);
@@ -229,22 +260,30 @@ function SubscriptionSettings({
         if (!cancelled && subscriptionResponse.ok) {
           const data = await subscriptionResponse.json();
           const source = data.subscriptions || data;
+          const rules = Array.isArray(source.rules) ? source.rules : [];
           setValues((current) => ({
-            capcodes: uniqueStrings(source.capcodes ?? current.capcodes),
-            vehicles: uniqueStrings(source.vehicles ?? current.vehicles),
-            stations: uniqueStrings(source.stations ?? current.stations),
-            call_types: uniqueStrings(source.call_types ?? current.call_types),
+            // The normalized API only stores station/call_type rules. Legacy
+            // vehicle and capcode preferences remain owned by /api/profile.
+            capcodes: current.capcodes,
+            vehicles: current.vehicles,
+            stations: uniqueStrings(rules.map((rule: { station?: string }) => rule.station)),
+            call_types: uniqueStrings(rules.map((rule: { call_type?: string }) => rule.call_type)),
           }));
-          if (Array.isArray(source.notification_types)) setChannels(uniqueStrings(source.notification_types));
+          if (Array.isArray(source.channels)) {
+            const records = source.channels.filter((channel: unknown): channel is ChannelRecord => typeof channel === 'object' && channel !== null && typeof (channel as ChannelRecord).type === 'string');
+            setChannelRecords(records);
+            const returnedTypes: unknown = records.length ? records.filter((channel: ChannelRecord) => channel.enabled !== false).map((channel: ChannelRecord) => channel.type) : source.channels;
+            setChannels(uniqueStrings(returnedTypes).map((channel: string) => channel.toLowerCase()));
+          }
         }
         if (!cancelled && catalogResponse.ok) {
           const data = await catalogResponse.json();
           const source = data.catalog || data;
-          setCatalog({
-            stations: uniqueStrings(source.stations ?? source.station),
-            call_types: uniqueStrings(source.call_types ?? source.callTypes ?? source.call_types_catalog),
-            channels: uniqueStrings(source.channels).length ? uniqueStrings(source.channels) : CHANNELS,
-          });
+           const entries = (items: unknown): CatalogEntry[] => Array.isArray(items) ? items.map((item) => typeof item === 'string' ? { code: item, label: item } : item as CatalogEntry).filter((item) => item?.code) : [];
+           setCatalog({
+             stations: entries(source.stations),
+             call_types: entries(source.call_types ?? source.callTypes ?? source.call_types_catalog),
+           });
         }
       } catch {
         // The catalog is optional: manually entered values remain usable when the API is unavailable.
@@ -258,6 +297,7 @@ function SubscriptionSettings({
 
   const updateList = (key: keyof SubscriptionValues, next: string[]) => {
     setValues((current) => ({ ...current, [key]: next }));
+    setDirty(true);
   };
 
   const save = async (event: React.FormEvent) => {
@@ -265,22 +305,39 @@ function SubscriptionSettings({
     setError('');
     setNotice('');
     setSaving(true);
-    const payload = { ...values, notification_types: channels };
+    const ruleStations = values.stations.length ? values.stations : [''];
+    const ruleCallTypes = values.call_types.length ? values.call_types : [''];
+    const rules = ruleStations.flatMap((station) => ruleCallTypes.map((call_type) => ({ station, call_type, enabled: true })));
+    const addressFor = (channel: string) => channel === 'email' ? email : phoneNumber;
+    const payload = {
+      enabled: true,
+      rules,
+      channels: channels.filter((type) => PROVIDERS.find((provider) => provider.type === type)?.normalized).map((type) => ({ type, address: addressFor(type), enabled: true })),
+    };
     try {
       let response = await fetch('/api/profile/subscriptions', {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      // Older deployments do not have the subscription resource yet.
+      let normalizedSaved = response.ok;
       if (response.status === 404 || response.status === 405) {
+        normalizedSaved = false;
         response = await fetch('/api/profile', {
           method: 'PUT',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...values, notification_types: channels.map((channel) => CHANNEL_LABELS[channel] || channel) }),
         });
       }
       if (!response.ok) throw new Error('Unable to save subscription settings. Please try again.');
+      // Vehicles/capcodes are legacy profile preferences, not normalized rules.
+      const legacyResponse = normalizedSaved ? await fetch('/api/profile', {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...values, notification_types: channels.map((channel) => CHANNEL_LABELS[channel] || channel) }),
+        }) : response;
+      if (!legacyResponse.ok) throw new Error('Alert rules saved, but legacy vehicle/capcode preferences could not be saved.');
+      setDirty(false);
       setNotice('Subscription settings saved.');
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Unable to save subscription settings.');
@@ -291,11 +348,29 @@ function SubscriptionSettings({
 
   const toggleChannel = (channel: string) => {
     setChannels((current) => current.includes(channel) ? current.filter((item) => item !== channel) : [...current, channel]);
+    setDirty(true);
   };
 
   const requestVerification = () => {
     setVerificationRequested(true);
-    setNotice('Verification is ready to connect when WhatsApp verification is enabled by the service.');
+    setNotice('Verification is not connected in this release. No message was sent.');
+  };
+
+  const toggleCatalog = (key: 'stations' | 'call_types', code: string) => {
+    updateList(key, values[key].includes(code) ? values[key].filter((item) => item !== code) : [...values[key], code]);
+  };
+
+  const filtered = (key: 'stations' | 'call_types') => catalog[key].filter((entry) => `${entry.label} ${entry.code}`.toLowerCase().includes(search[key].toLowerCase()));
+  const providerStatus = (provider: Provider) => {
+    const record = channelRecords.find((channel) => channel.type.toLowerCase() === provider.type);
+    if (record?.verified) return { label: 'Verified', className: 'verified' };
+    if (record?.enabled && record.address) return { label: 'Configured', className: 'configured' };
+    if (provider.type === 'sms' && phoneNumber) return { label: 'Available', className: 'available' };
+    if (provider.type === 'email' && email) return { label: 'Available', className: 'available' };
+    if (provider.type === 'pushover' && pushoverConfigured) return { label: 'Configured (legacy)', className: 'configured' };
+    if (provider.type === 'whatsapp' && phoneNumber) return { label: 'Verification required', className: 'pending' };
+    if (provider.normalized && provider.type === 'push') return { label: 'Browser setup required', className: 'pending' };
+    return { label: 'Unsupported', className: 'unsupported' };
   };
 
   return (
@@ -303,46 +378,58 @@ function SubscriptionSettings({
       <div className="section-heading">
         <div>
           <h2>Subscription settings</h2>
-          <p className="small-text">Choose the stations, call types, and channels that should reach you.</p>
+          <p className="small-text">Choose alert rules first, then choose how those alerts should be delivered.</p>
         </div>
         {loading && <span className="small-text" role="status">Loading catalog…</span>}
       </div>
       {error && <div className="error" role="alert">{error}</div>}
-      {notice && <div className="subscription-notice" role="status">{notice}</div>}
-      <form onSubmit={save}>
-        <div className="subscription-grid">
-          <TagInput label="Capcodes" tags={values.capcodes} onAdd={(item) => updateList('capcodes', [...values.capcodes, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('capcodes', values.capcodes.filter((_, i) => i !== index))} placeholder="e.g. 0123456" />
-          <TagInput label="Vehicles" tags={values.vehicles} onAdd={(item) => updateList('vehicles', [...values.vehicles, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('vehicles', values.vehicles.filter((_, i) => i !== index))} placeholder="e.g. E101" />
-          <TagInput label="Stations" tags={values.stations} onAdd={(item) => updateList('stations', [...values.stations, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('stations', values.stations.filter((_, i) => i !== index))} placeholder={catalog.stations[0] || 'e.g. Station 10'} />
-          <TagInput label="Call types" tags={values.call_types} onAdd={(item) => updateList('call_types', [...values.call_types, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('call_types', values.call_types.filter((_, i) => i !== index))} placeholder={catalog.call_types[0] || 'e.g. Structure Fire'} />
-        </div>
-
-        {(catalog.stations.length > 0 || catalog.call_types.length > 0) && <p className="catalog-hint">Catalog suggestions: {[...catalog.stations, ...catalog.call_types].slice(0, 8).join(' · ')}</p>}
+        {notice && <div className="subscription-notice" role="status" aria-live="polite">{notice}</div>}
+        {dirty && !saving && <p className="save-state" role="status">Unsaved changes</p>}
+        <form onSubmit={save}>
+        <section className="rule-section" aria-labelledby="rule-heading">
+          <div className="section-heading"><div><h3 id="rule-heading">Alert rules</h3><p className="small-text">Select any station and call type combination. Empty selections mean “all”.</p></div><span className="section-count">{values.stations.length + values.call_types.length} selected</span></div>
+          <div className="subscription-grid">
+            {(['stations', 'call_types'] as const).map((key) => <div className="catalog-control" key={key}>
+              <label htmlFor={`${key}-search`}>{key === 'call_types' ? 'Call types' : 'Stations'}</label>
+              <input id={`${key}-search`} type="search" value={search[key]} onChange={(event) => setSearch({ ...search, [key]: event.target.value })} placeholder={`Search ${key === 'call_types' ? 'call types' : 'stations'}…`} />
+              <div className="catalog-list" role="group" aria-label={`Select ${key === 'call_types' ? 'call types' : 'stations'}`}>
+                {filtered(key).map((entry) => <label className="catalog-option" key={entry.code}><input type="checkbox" checked={values[key].includes(entry.code)} onChange={() => toggleCatalog(key, entry.code)} /><span>{entry.label}<small>{entry.code !== entry.label ? entry.code : ''}</small></span></label>)}
+                {filtered(key).length === 0 && <span className="empty-state">No catalog matches. Add a value below.</span>}
+              </div>
+              <TagInput label="" tags={values[key]} onAdd={(item) => updateList(key, [...values[key], item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList(key, values[key].filter((_, i) => i !== index))} placeholder={`Add ${key === 'call_types' ? 'call type' : 'station'}…`} />
+            </div>)}
+          </div>
+          <div className="legacy-rule-grid"><TagInput label="Vehicles" tags={values.vehicles} onAdd={(item) => updateList('vehicles', [...values.vehicles, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('vehicles', values.vehicles.filter((_, i) => i !== index))} placeholder="e.g. E101" /><TagInput label="Capcodes" tags={values.capcodes} onAdd={(item) => updateList('capcodes', [...values.capcodes, item].filter((v, i, all) => all.indexOf(v) === i))} onDelete={(index) => updateList('capcodes', values.capcodes.filter((_, i) => i !== index))} placeholder="e.g. 0123456" /></div>
+          <p className="catalog-hint">Vehicle and capcode filters are retained through the profile service. The normalized subscription API currently stores station and call type rules only.</p>
+        </section>
 
         <fieldset className="channel-options">
           <legend>Delivery channels</legend>
-          <p className="small-text">Opt in only to channels you can receive. Current selections are shown below.</p>
+          <p className="small-text">Opt in only to channels you can receive. Configured and verified providers are shown separately from unsupported options.</p>
+          <p className="provider-legend" aria-label="Provider status legend"><span className="verified-key">Verified</span> <span className="configured-key">Configured</span> <span className="pending-key">Setup required</span> <span>Unsupported</span></p>
           <div className="channel-grid">
-            {(catalog.channels.length ? catalog.channels : CHANNELS).map((channel) => (
-              <label className="channel-option" key={channel}>
-                <input type="checkbox" checked={channels.includes(channel)} onChange={() => toggleChannel(channel)} />
-                <span><strong>{channel}</strong><small>{channels.includes(channel) ? 'Opted in' : 'Not opted in'}</small></span>
+            {PROVIDERS.map((provider) => {
+              const status = providerStatus(provider);
+              const selectable = provider.normalized || provider.type === 'pushover';
+              return <label className={`channel-option ${status.className}`} key={provider.type}>
+                <input type="checkbox" checked={channels.includes(provider.type)} onChange={() => toggleChannel(provider.type)} disabled={!selectable || (provider.type === 'whatsapp' && !phoneNumber)} />
+                <span><strong>{provider.label}</strong><small>{CHANNEL_HELP[provider.type] || provider.description}</small><small className="provider-status">{status.label}{channels.includes(provider.type) ? ' · Selected' : ''}</small></span>
               </label>
-            ))}
+            })}
           </div>
         </fieldset>
 
         <div className="whatsapp-panel">
           <div><h3>WhatsApp verification</h3><p className="small-text">Verification is required before WhatsApp delivery can be enabled.</p></div>
-          <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => setWhatsappConsent(event.target.checked)} /> <span>I consent to receiving FirePager alerts on WhatsApp at <strong>{phoneNumber || 'the phone number on my profile'}</strong>.</span></label>
+          <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => { setWhatsappConsent(event.target.checked); setDirty(true); }} /> <span>I consent to receiving FirePager alerts on WhatsApp at <strong>{phoneNumber || 'the phone number on my profile'}</strong>.</span></label>
           <div className="verification-controls">
             <button type="button" onClick={requestVerification} disabled={!whatsappConsent || !phoneNumber || verificationRequested}>Request verification code</button>
-            <input aria-label="WhatsApp verification code" inputMode="numeric" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="Code (when received)" disabled={!verificationRequested} />
+            <label className="sr-only" htmlFor="whatsapp-code">WhatsApp verification code</label><input id="whatsapp-code" inputMode="numeric" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value)} placeholder="Code (when received)" disabled={!verificationRequested} />
           </div>
           <p className="small-text">No message is sent by this screen yet; this is a consent and verification-ready scaffold.</p>
         </div>
 
-        <div className="subscription-actions"><button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save subscription settings'}</button></div>
+        <div className="subscription-actions"><span className="small-text" aria-live="polite">{saving ? 'Saving your preferences…' : dirty ? 'Changes are not saved' : 'All changes saved'}</span><button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save subscription settings'}</button></div>
       </form>
     </div>
   );
@@ -350,6 +437,7 @@ function SubscriptionSettings({
 
 function TagInput({ label, tags, onAdd, onDelete, placeholder }: TagInputProps) {
   const [value, setValue] = useState('');
+  const inputId = `tag-${label.toLowerCase().replace(/\s+/g, '-') || 'custom'}`;
 
   const handleAdd = () => {
     if (value.trim()) {
@@ -367,9 +455,10 @@ function TagInput({ label, tags, onAdd, onDelete, placeholder }: TagInputProps) 
 
   return (
     <div className="form-group">
-      <label>{label}</label>
+      {label && <label htmlFor={inputId}>{label}</label>}
       <div className="tag-input-wrapper">
         <input 
+          id={inputId}
           value={value} 
           onChange={(e) => setValue(e.target.value)} 
           onKeyDown={handleKeyPress}
@@ -384,7 +473,7 @@ function TagInput({ label, tags, onAdd, onDelete, placeholder }: TagInputProps) 
           tags.map((tag, idx) => (
             <div key={`${tag}-${idx}`} className="tag">
               {tag}
-              <button type="button" className="tag-delete" onClick={() => onDelete(idx)}>×</button>
+          <button type="button" className="tag-delete" onClick={() => onDelete(idx)} aria-label={`Remove ${tag}`}>×</button>
             </div>
           ))
         )}
@@ -699,6 +788,8 @@ export function Profile() {
         initialValues={subscriptions}
         initialChannels={Object.entries(notifications).filter(([, enabled]) => enabled).map(([channel]) => channel)}
         phoneNumber={formData.phone_number}
+        email={formData.email}
+        pushoverConfigured={Boolean(formData.pushover_user_key && formData.pushover_app_token)}
       />
     </div>
   );

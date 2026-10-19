@@ -38,6 +38,7 @@ func SetupRouter() *gin.Engine {
 			protected.GET("/profile/subscriptions", GetSubscriptionSettingsHandler)
 			protected.PUT("/profile/subscriptions", UpdateSubscriptionSettingsHandler)
 			protected.GET("/profile/subscriptions/catalog", GetSubscriptionCatalogHandler)
+			protected.GET("/profile/subscriptions/channels", GetNotificationChannelCatalogHandler)
 			protected.GET("/configs", getConfigs)
 			protected.GET("/invites", GetMyInvitesHandler)
 			protected.POST("/invites", CreateInviteHandler)

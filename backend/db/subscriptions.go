@@ -105,7 +105,14 @@ func GetSubscriptionCatalogs() (map[string][]models.CatalogEntry, error) {
 	return result, nil
 }
 
-var validChannelTypes = map[string]bool{"sms": true, "email": true, "push": true, "whatsapp": true}
+// Keep push as a legacy alias while accepting the channel identifiers exposed
+// by the provider catalog. Saving a subscription does not require a provider
+// to be usable yet; that state is reported by the catalog.
+var validChannelTypes = map[string]bool{
+	"sms": true, "email": true, "push": true, "whatsapp": true,
+	"telegram": true, "signal": true, "pushover": true, "ntfy": true,
+	"web_push": true, "discord": true, "slack": true, "teams": true, "voice": true,
+}
 
 func NormalizeAndValidateSubscriptionSettings(settings *models.SubscriptionSettings) error {
 	for i := range settings.Rules {
