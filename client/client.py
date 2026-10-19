@@ -470,7 +470,6 @@ def main():
                         if decoder_lock:
                             decoder_lock.acquire(timeout=0)
                         process = start_sdr(frequency, ppm=ppm, gain=gain)
-                        decoder_failures = 0
                         last_decoder_activity = now
                     except DeviceBusyError:
                         decoder_failures += 1
