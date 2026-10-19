@@ -257,7 +257,7 @@ def calibration_config(environ=None):
         "quiet_period": environment_float(
             "SDR_CALIBRATE_QUIET_PERIOD", 5, minimum=0, environ=environ),
         "on_start": environ.get("SDR_CALIBRATE_ON_START", "false").lower() == "true",
-        "target_on_start": environ.get("SDR_CALIBRATE_TARGET_ON_START", "false").lower() == "true",
+        "target_on_start": environ.get("SDR_CALIBRATE_TARGET_ON_START", "true").lower() == "true",
         "target_candidates": target_candidates,
         "target_repeats": target_repeats,
         "target_min_prominence": environment_float(

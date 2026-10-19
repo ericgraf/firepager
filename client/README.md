@@ -22,8 +22,9 @@ gain. Configure these variables in the client container:
   periodic scan may take ownership of the dongle (default `5`).
 * `SDR_CALIBRATION_FILE` — last-known-good JSON path (default
   `/var/lib/firepager/sdr-calibration.json`).
-* `SDR_CALIBRATE_TARGET_ON_START` — set `true` to calibrate around `PAGER_FREQ`
-  using the pager signal itself (default `false`).
+* `SDR_CALIBRATE_TARGET_ON_START` — calibrate around `PAGER_FREQ` using the
+  pager signal itself (enabled by default). Set `false` only when the startup
+  receive interruption is unacceptable.
 * `SDR_CALIBRATE_TARGET_PPM_MIN` / `MAX` / `STEP` — candidate range (defaults
   `-8`, `8`, and `1` ppm).
 * `SDR_CALIBRATE_TARGET_REPEATS` — complete candidate sweeps required for
@@ -64,10 +65,10 @@ python3 /app/sdr_calibrate.py --target "$PAGER_FREQ" --gain 49 \
   --output /var/lib/firepager/sdr-calibration.json
 ```
 
-For startup automation set `SDR_CALIBRATE_TARGET_ON_START=true`. Each candidate
-is scanned repeatedly with `rtl_power`; weak, absent, or ambiguous signals do
-not replace the configured or last-known-good PPM. Startup calibration runs
-before `rtl_fm` starts, so the dongle is never shared by two processes.
+Target calibration runs by default. Each candidate is scanned repeatedly with
+`rtl_power`; weak, absent, or ambiguous signals do not replace the configured
+or last-known-good PPM. Startup calibration runs before `rtl_fm` starts, so the
+dongle is never shared by two processes.
 
 ## Periodic calibration
 
