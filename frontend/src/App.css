@@ -1,0 +1,23 @@
+.app-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 16px;
+  width: 100%;
+}
+
+.app-header {
+  margin-bottom: 48px;
+  text-align: center;
+}
+
+.app-header p {
+  color: var(--text);
+  font-size: 18px;
+  margin-top: 8px;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}

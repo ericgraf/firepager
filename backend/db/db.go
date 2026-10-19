@@ -1,0 +1,636 @@
+package db
+
+import (
+	"database/sql"
+	"log"
+	"os"
+	"strings"
+
+	"github.com/firepager/backend/models"
+	"github.com/lib/pq"
+	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
+)
+
+var DB *sql.DB
+
+func normalizeStringSlice(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+
+	return values
+}
+
+func normalizeUserArrays(u *models.User) {
+	u.Capcodes = normalizeStringSlice(u.Capcodes)
+	u.Vehicles = normalizeStringSlice(u.Vehicles)
+	u.Stations = normalizeStringSlice(u.Stations)
+	u.CallTypes = normalizeStringSlice(u.CallTypes)
+	u.NotificationTypes = normalizeStringSlice(u.NotificationTypes)
+}
+
+func InitDB() {
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		connStr = "postgres://backend_user@firepager-db:5432/firepager?sslmode=disable"
+	}
+	var err error
+	DB, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = DB.Ping()
+	if err != nil {
+		log.Printf("Cannot ping DB, will retry later: %v", err)
+	}
+
+	createSchema()
+	seedAdminUser()
+}
+
+func createSchema() {
+	schema := `
+	CREATE TABLE IF NOT EXISTS messages (
+		id UUID PRIMARY KEY,
+		timestamp TIMESTAMP NOT NULL,
+		source VARCHAR(50) NOT NULL,
+		text TEXT NOT NULL,
+		type VARCHAR(20),
+		page_id VARCHAR(50),
+		call_type VARCHAR(100),
+		incident_number VARCHAR(50),
+		vehicles TEXT[] DEFAULT '{}',
+		address TEXT,
+		intersection TEXT,
+		latitude DOUBLE PRECISION,
+		longitude DOUBLE PRECISION,
+		client_id VARCHAR(100),
+		station VARCHAR(50)
+	);
+	CREATE TABLE IF NOT EXISTS users (
+		id SERIAL PRIMARY KEY,
+		email VARCHAR(255) UNIQUE NOT NULL,
+		password_hash VARCHAR(255) NOT NULL,
+		name VARCHAR(100) NOT NULL,
+		phone_number VARCHAR(20) NOT NULL,
+		capcodes TEXT[] NOT NULL,
+		vehicles TEXT[] DEFAULT '{}',
+		stations TEXT[] DEFAULT '{}',
+		call_types TEXT[] DEFAULT '{}',
+		role VARCHAR(20) DEFAULT 'user',
+		notification_types TEXT[] DEFAULT '{}',
+		pushover_user_key VARCHAR(100) DEFAULT '',
+		pushover_app_token VARCHAR(100) DEFAULT '',
+		invited_by INTEGER REFERENCES users(id)
+	);
+	CREATE TABLE IF NOT EXISTS invites (
+		id SERIAL PRIMARY KEY,
+		code VARCHAR(100) UNIQUE NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		created_by INTEGER REFERENCES users(id),
+		is_used BOOLEAN DEFAULT FALSE,
+		used_by INTEGER REFERENCES users(id)
+	);
+
+	-- Add columns to users if they don't exist (for existing DBs)
+	DO $$ 
+	BEGIN 
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='email') THEN
+			ALTER TABLE users ADD COLUMN email VARCHAR(255) UNIQUE;
+			ALTER TABLE users ADD COLUMN password_hash VARCHAR(255);
+			ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'user';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='vehicles') THEN
+			ALTER TABLE users ADD COLUMN vehicles TEXT[] DEFAULT '{}';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='stations') THEN
+			ALTER TABLE users ADD COLUMN stations TEXT[] DEFAULT '{}';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='call_types') THEN
+			ALTER TABLE users ADD COLUMN call_types TEXT[] DEFAULT '{}';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='notification_types') THEN
+			ALTER TABLE users ADD COLUMN notification_types TEXT[] DEFAULT '{}';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='pushover_user_key') THEN
+			ALTER TABLE users ADD COLUMN pushover_user_key VARCHAR(100) DEFAULT '';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='pushover_app_token') THEN
+			ALTER TABLE users ADD COLUMN pushover_app_token VARCHAR(100) DEFAULT '';
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='invited_by') THEN
+			ALTER TABLE users ADD COLUMN invited_by INTEGER REFERENCES users(id);
+		END IF;
+
+		IF EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_name='messages' AND column_name='vehicles' AND udt_name <> '_text'
+		) THEN
+			ALTER TABLE messages ADD COLUMN vehicles_new TEXT[] DEFAULT '{}';
+			UPDATE messages
+			SET vehicles_new = CASE
+				WHEN vehicles IS NULL OR BTRIM(vehicles) = '' THEN ARRAY[]::TEXT[]
+				ELSE regexp_split_to_array(BTRIM(vehicles), E'\\s+')
+			END;
+			ALTER TABLE messages DROP COLUMN vehicles;
+			ALTER TABLE messages RENAME COLUMN vehicles_new TO vehicles;
+		END IF;
+	END $$;
+
+	CREATE TABLE IF NOT EXISTS system_configs (
+		key VARCHAR(100) PRIMARY KEY,
+		value TEXT NOT NULL
+	);
+	`
+	_, err := DB.Exec(schema)
+	if err != nil {
+		log.Fatalf("Error creating schema: %v", err)
+	}
+
+	// Default Configs
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('SMS_GATEWAY_ENABLED', 'false') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('WHATSAPP_GATEWAY_ENABLED', 'false') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('SMS_PROVIDER', 'twilio') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('TWILIO_ACCOUNT_SID', '') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('TWILIO_AUTH_TOKEN', '') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('TWILIO_FROM_NUMBER', '') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('TWILIO_WHATSAPP_FROM_NUMBER', '') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('GEOCODING_PROVIDER', 'nominatim') ON CONFLICT (key) DO NOTHING")
+	_, _ = DB.Exec("INSERT INTO system_configs (key, value) VALUES ('CITY_REGION_CONTEXT', 'Ottawa, ON') ON CONFLICT (key) DO NOTHING")
+}
+
+func seedAdminUser() {
+	var count int
+	err := DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	if err != nil {
+		log.Printf("Error checking users count: %v", err)
+		return
+	}
+
+	if count == 0 {
+		password := os.Getenv("ADMIN_PASSWORD")
+		if password == "" {
+			log.Println("Skipping admin bootstrap: ADMIN_PASSWORD is not set")
+			return
+		}
+		log.Println("Seeding default admin user...")
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("Error hashing default password: %v", err)
+			return
+		}
+
+		_, err = DB.Exec(`INSERT INTO users (email, password_hash, name, phone_number, capcodes, vehicles, role, notification_types, pushover_user_key, pushover_app_token) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			"admin@firepager.local", string(hashedPassword), "Admin", "0000000000",
+			pq.Array([]string{"1234567"}), pq.Array([]string{"E12"}), "admin",
+			pq.Array([]string{"SMS", "Email", "Push"}), "", "")
+		if err != nil {
+			log.Printf("Error seeding admin user: %v", err)
+		}
+	}
+}
+
+func SaveMessage(msg *models.Message) error {
+	query := `INSERT INTO messages (
+		id, timestamp, source, text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+	_, err := DB.Exec(query,
+		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.Type,
+		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles),
+		msg.Address, msg.Intersection, msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
+	return err
+}
+
+func GetMessages() ([]models.Message, error) {
+	query := `SELECT 
+		id, timestamp, source, text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
+		FROM messages ORDER BY timestamp DESC LIMIT 100`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []models.Message
+	for rows.Next() {
+		var m models.Message
+		if err := rows.Scan(
+			&m.ID, &m.Timestamp, &m.Source, &m.Text, &m.Type,
+			&m.PageID, &m.CallType, &m.IncidentNumber, pq.Array(&m.Vehicles),
+			&m.Address, &m.Intersection, &m.Latitude, &m.Longitude, &m.ClientID, &m.Station,
+		); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, nil
+}
+
+func DeleteMessage(id string) error {
+	result, err := DB.Exec("DELETE FROM messages WHERE id = $1", id)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+func GetUsers() ([]models.User, error) {
+	query := `
+		SELECT
+			u.id,
+			u.email,
+			u.name,
+			u.phone_number,
+			u.capcodes,
+			u.vehicles,
+			u.stations,
+			u.call_types,
+			u.role,
+			u.notification_types,
+			u.pushover_user_key,
+			u.pushover_app_token,
+			u.invited_by,
+			COALESCE(inviter.name, '')
+		FROM users u
+		LEFT JOIN users inviter ON inviter.id = u.invited_by
+	`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var u models.User
+		if err := rows.Scan(
+			&u.ID, &u.Email, &u.Name, &u.PhoneNumber,
+			pq.Array(&u.Capcodes),
+			pq.Array(&u.Vehicles),
+			pq.Array(&u.Stations),
+			pq.Array(&u.CallTypes),
+			&u.Role,
+			pq.Array(&u.NotificationTypes),
+			&u.PushoverUserKey,
+			&u.PushoverAppToken,
+			&u.InvitedBy,
+			&u.InvitedByName,
+		); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+func AddUser(u *models.User) error {
+	normalizeUserArrays(u)
+
+	query := "INSERT INTO users (email, password_hash, name, phone_number, capcodes, vehicles, stations, call_types, role, notification_types, pushover_user_key, pushover_app_token, invited_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id"
+	return DB.QueryRow(query,
+		u.Email, u.PasswordHash, u.Name, u.PhoneNumber,
+		pq.Array(u.Capcodes),
+		pq.Array(u.Vehicles),
+		pq.Array(u.Stations),
+		pq.Array(u.CallTypes),
+		u.Role,
+		pq.Array(u.NotificationTypes),
+		u.PushoverUserKey,
+		u.PushoverAppToken,
+		u.InvitedBy,
+	).Scan(&u.ID)
+}
+
+func GetUserByEmail(email string) (*models.User, error) {
+	var u models.User
+	query := `
+		SELECT
+			u.id,
+			u.email,
+			u.password_hash,
+			u.name,
+			u.phone_number,
+			u.capcodes,
+			u.vehicles,
+			u.stations,
+			u.call_types,
+			u.role,
+			u.notification_types,
+			u.pushover_user_key,
+			u.pushover_app_token,
+			u.invited_by,
+			COALESCE(inviter.name, '')
+		FROM users u
+		LEFT JOIN users inviter ON inviter.id = u.invited_by
+		WHERE u.email = $1
+	`
+	err := DB.QueryRow(query, email).Scan(
+		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.PhoneNumber,
+		pq.Array(&u.Capcodes),
+		pq.Array(&u.Vehicles),
+		pq.Array(&u.Stations),
+		pq.Array(&u.CallTypes),
+		&u.Role,
+		pq.Array(&u.NotificationTypes),
+		&u.PushoverUserKey,
+		&u.PushoverAppToken,
+		&u.InvitedBy,
+		&u.InvitedByName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func GetUserByID(id int) (*models.User, error) {
+	var u models.User
+	query := `
+		SELECT
+			u.id,
+			u.email,
+			u.password_hash,
+			u.name,
+			u.phone_number,
+			u.capcodes,
+			u.vehicles,
+			u.stations,
+			u.call_types,
+			u.role,
+			u.notification_types,
+			u.pushover_user_key,
+			u.pushover_app_token,
+			u.invited_by,
+			COALESCE(inviter.name, '')
+		FROM users u
+		LEFT JOIN users inviter ON inviter.id = u.invited_by
+		WHERE u.id = $1
+	`
+	err := DB.QueryRow(query, id).Scan(
+		&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.PhoneNumber,
+		pq.Array(&u.Capcodes),
+		pq.Array(&u.Vehicles),
+		pq.Array(&u.Stations),
+		pq.Array(&u.CallTypes),
+		&u.Role,
+		pq.Array(&u.NotificationTypes),
+		&u.PushoverUserKey,
+		&u.PushoverAppToken,
+		&u.InvitedBy,
+		&u.InvitedByName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func UpdateUser(u *models.User) error {
+	normalizeUserArrays(u)
+
+	query := `UPDATE users SET 
+		email = $1, name = $2, phone_number = $3, 
+		capcodes = $4, vehicles = $5, stations = $6, 
+		call_types = $7, notification_types = $8,
+		pushover_user_key = $9, pushover_app_token = $10`
+
+	params := []interface{}{
+		u.Email, u.Name, u.PhoneNumber,
+		pq.Array(u.Capcodes), pq.Array(u.Vehicles), pq.Array(u.Stations),
+		pq.Array(u.CallTypes), pq.Array(u.NotificationTypes),
+		u.PushoverUserKey, u.PushoverAppToken,
+	}
+
+	if u.PasswordHash != "" {
+		query += ", password_hash = $11 WHERE id = $12"
+		params = append(params, u.PasswordHash, u.ID)
+	} else {
+		query += " WHERE id = $11"
+		params = append(params, u.ID)
+	}
+
+	_, err := DB.Exec(query, params...)
+	return err
+}
+
+func UpdateUserRole(userID int, role string) error {
+	_, err := DB.Exec("UPDATE users SET role = $1 WHERE id = $2", role, userID)
+	return err
+}
+
+func GetConfigs() ([]models.SystemConfig, error) {
+	rows, err := DB.Query("SELECT key, value FROM system_configs")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var configs []models.SystemConfig
+	for rows.Next() {
+		var c models.SystemConfig
+		if err := rows.Scan(&c.Key, &c.Value); err != nil {
+			return nil, err
+		}
+		configs = append(configs, c)
+	}
+	return configs, nil
+}
+
+func UpdateConfig(key, value string) error {
+	_, err := DB.Exec("INSERT INTO system_configs (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", key, value)
+	return err
+}
+
+func GetConfigValue(key, fallback string) string {
+	var value string
+	err := DB.QueryRow("SELECT value FROM system_configs WHERE key = $1", key).Scan(&value)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return fallback
+	}
+
+	return value
+}
+
+func UpdateMessageCoordinates(messageID string, latitude, longitude float64) error {
+	_, err := DB.Exec(
+		"UPDATE messages SET latitude = $1, longitude = $2 WHERE id = $3",
+		latitude,
+		longitude,
+		messageID,
+	)
+	return err
+}
+
+func CreateInvite(invite *models.Invite) error {
+	query := "INSERT INTO invites (code, created_by) VALUES ($1, $2) RETURNING id, created_at"
+	return DB.QueryRow(query, invite.Code, invite.CreatedBy).Scan(&invite.ID, &invite.CreatedAt)
+}
+
+func GetInviteByCode(code string) (*models.Invite, error) {
+	var inv models.Invite
+	query := `
+		SELECT
+			i.id,
+			i.code,
+			i.created_at,
+			i.created_by,
+			COALESCE(creator.name, ''),
+			i.is_used,
+			i.used_by,
+			COALESCE(used_user.name, '')
+		FROM invites i
+		LEFT JOIN users creator ON creator.id = i.created_by
+		LEFT JOIN users used_user ON used_user.id = i.used_by
+		WHERE i.code = $1
+	`
+	err := DB.QueryRow(query, code).Scan(
+		&inv.ID,
+		&inv.Code,
+		&inv.CreatedAt,
+		&inv.CreatedBy,
+		&inv.CreatedByName,
+		&inv.IsUsed,
+		&inv.UsedBy,
+		&inv.UsedByName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
+func MarkInviteUsed(code string, userID int) error {
+	query := "UPDATE invites SET is_used = TRUE, used_by = $1 WHERE code = $2"
+	_, err := DB.Exec(query, userID, code)
+	return err
+}
+
+func GetInvites() ([]models.Invite, error) {
+	query := `
+		SELECT
+			i.id,
+			i.code,
+			i.created_at,
+			i.created_by,
+			COALESCE(creator.name, ''),
+			i.is_used,
+			i.used_by,
+			COALESCE(used_user.name, '')
+		FROM invites i
+		LEFT JOIN users creator ON creator.id = i.created_by
+		LEFT JOIN users used_user ON used_user.id = i.used_by
+		ORDER BY i.created_at DESC
+	`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var invites []models.Invite
+	for rows.Next() {
+		var inv models.Invite
+		if err := rows.Scan(&inv.ID, &inv.Code, &inv.CreatedAt, &inv.CreatedBy, &inv.CreatedByName, &inv.IsUsed, &inv.UsedBy, &inv.UsedByName); err != nil {
+			return nil, err
+		}
+		invites = append(invites, inv)
+	}
+	return invites, nil
+}
+
+func GetMetrics() (*models.Metrics, error) {
+	metrics := &models.Metrics{}
+
+	err := DB.QueryRow("SELECT COUNT(*) FROM messages").Scan(&metrics.TotalMessages)
+	if err != nil {
+		return nil, err
+	}
+
+	// By Type
+	rows, err := DB.Query("SELECT type, COUNT(*) FROM messages GROUP BY type")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s models.Stat
+		var t sql.NullString
+		if err := rows.Scan(&t, &s.Value); err != nil {
+			return nil, err
+		}
+		if t.Valid {
+			s.Label = t.String
+		} else {
+			s.Label = "UNKNOWN"
+		}
+		metrics.ByType = append(metrics.ByType, s)
+	}
+
+	// By Client
+	rows, err = DB.Query("SELECT client_id, COUNT(*) FROM messages GROUP BY client_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s models.Stat
+		var c sql.NullString
+		if err := rows.Scan(&c, &s.Value); err != nil {
+			return nil, err
+		}
+		if c.Valid {
+			s.Label = c.String
+		} else {
+			s.Label = "UNKNOWN"
+		}
+		metrics.ByClient = append(metrics.ByClient, s)
+	}
+
+	// By Station (Calls only)
+	rows, err = DB.Query("SELECT station FROM messages WHERE type = 'CALL' AND station != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stationCounts := make(map[string]int)
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		for _, station := range strings.Split(raw, ",") {
+			station = strings.TrimSpace(station)
+			if station == "" {
+				continue
+			}
+			stationCounts[station]++
+		}
+	}
+	for label, value := range stationCounts {
+		metrics.ByStation = append(metrics.ByStation, models.Stat{
+			Label: label,
+			Value: value,
+		})
+	}
+
+	return metrics, nil
+}
