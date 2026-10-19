@@ -348,7 +348,8 @@ def drain_spool(spool, connection, channel):
 
 def main():
     client_id = os.environ.get("CLIENT_ID", os.uname().nodename)
-    frequency = os.environ.get("PAGER_FREQ", "155603323")
+    # ISED TAFL lists Ottawa Fire paging transmitters/receivers at 155.610 MHz.
+    frequency = os.environ.get("PAGER_FREQ", "155610000")
     calibration_file = os.environ.get("SDR_CALIBRATION_FILE", "/var/lib/firepager/sdr-calibration.json")
     configured = load_calibration(calibration_file)
     ppm, gain = configured or ("0", "49")

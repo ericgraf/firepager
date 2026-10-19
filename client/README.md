@@ -8,7 +8,8 @@ gain. Configure these variables in the client container:
 * `SDR_GAIN` — RTL gain in dB (default `49`). Use a value supported by the
   dongle; calibrate and operate dongles at the same gain when comparing them.
 * `SDR_SAMPLE_RATE` — rtl_fm sample rate (default `22050`).
-* `PAGER_FREQ` — pager frequency in Hz (existing setting).
+* `PAGER_FREQ` — pager frequency in Hz; defaults to `155610000` (155.610 MHz,
+  the Ottawa Fire paging allocation listed in ISED TAFL data).
 * `SDR_CALIBRATE_STATIONS` — comma-separated `name=frequency` FM stations;
   calibration is disabled when empty.
 * `SDR_CALIBRATE_ON_START` — set `true` to calibrate before starting POCSAG.

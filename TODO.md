@@ -49,6 +49,8 @@
 - [x] Basic reconnect loop exists (5s retries)
 - [x] Harden SDR subprocess cleanup, redact credentials from logs, add local spooling and publisher confirmations; tests pass
 - [x] Add receive-only RTL-SDR FM-reference calibration with per-device PPM/gain settings and jittered periodic recalibration
+- [x] Confirm Ottawa Fire paging allocation at 155.610 MHz from current ISED TAFL data; use as the client default target
+- [ ] Verify the 155.610 MHz target with live POCSAG traffic before applying automatic PPM corrections
 - [ ] Validate calibration on each Pi with multiple strong local FM stations; tune station list, gain, and outage schedule
 - [ ] Fleet visibility: dashboard shows per-Pi last-seen / health (client_id already in schema)
 - [ ] Provision least-privilege per-Pi broker users (currently shared application account)
