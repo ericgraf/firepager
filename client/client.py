@@ -428,28 +428,6 @@ def main():
             # SDR reception does not depend on broker availability.  Starting
             # it before the RabbitMQ connect loop also avoids losing radio
             # time while a broker is down; the spool still buffers pages.
-            if not mock_mode and (process is None or process.poll() is not None):
-                if process is not None:
-                    terminate_process_group(process)
-                    process = None
-                    if decoder_lock:
-                        decoder_lock.release()
-                now = time.monotonic()
-                if now >= decoder_retry_at:
-                    try:
-                        if decoder_lock:
-                            decoder_lock.acquire(timeout=0)
-                        process = start_sdr(frequency, ppm=ppm, gain=gain)
-                        decoder_failures = 0
-                        last_decoder_activity = now
-                    except DeviceBusyError:
-                        decoder_failures += 1
-                        decoder_retry_at = now + min(30, 2 ** min(decoder_failures, 5))
-                        logger.warning("RTL-SDR is busy; decoder start deferred")
-                    except Exception:
-                        if decoder_lock:
-                            decoder_lock.release()
-                        raise
             if connection is None or not connection.is_open:
                 close_connection(connection)
                 connection, channel = connect_rabbitmq(stopping)
