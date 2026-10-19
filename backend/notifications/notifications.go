@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,10 @@ func SendNotification(user *models.User, msg *models.Message) {
 			sendEmail(user, msg)
 		case "PUSH":
 			sendPush(user, msg)
+		case "WEB_PUSH", "WEBPUSH":
+			sendConfiguredProvider("web_push", user.Email, user, msg)
+		case "TELEGRAM", "SIGNAL", "NTFY", "DISCORD", "SLACK", "TEAMS", "VOICE":
+			sendConfiguredProvider(strings.ToLower(nType), user.Email, user, msg)
 		case "PUSHOVER":
 			sendPushover(user, msg)
 		case "WHATSAPP":
@@ -78,18 +83,45 @@ func sendEmail(user *models.User, msg *models.Message) {
 	if user.Email == "" {
 		return
 	}
-
-	// Mock implementation
-	subject := fmt.Sprintf("Firepager Alert: %s #%s", msg.CallType, msg.IncidentNumber)
-	content := fmt.Sprintf("Alert for %s\nIncident: %s\nAddress: %s\nVehicles: %s\n\nFull Text:\n%s",
-		user.Name, msg.IncidentNumber, msg.Address, formatVehicles(msg.Vehicles), msg.Text)
-	log.Printf("[MOCK EMAIL] Sending to %s: %s", user.Email, subject)
-	_ = content // use it later
+	sendConfiguredProvider("email", user.Email, user, msg)
 }
 
 func sendPush(user *models.User, msg *models.Message) {
-	// Mock implementation
-	log.Printf("[MOCK PUSH] Sending notification to user %s (%s)", user.Name, user.Email)
+	// "push" is retained for existing subscriptions; actual Web Push requires
+	// a provider endpoint and a registered subscription token.
+	sendConfiguredProvider("push", user.Email, user, msg)
+}
+
+func sendConfiguredProvider(name, recipient string, user *models.User, msg *models.Message) {
+	configs, err := db.GetConfigs()
+	if err != nil {
+		log.Printf("%s notification skipped: provider configuration unavailable", name)
+		return
+	}
+	values := make(map[string]string, len(configs))
+	for _, config := range configs {
+		values[config.Key] = config.Value
+	}
+	cfg := ProviderConfigFromMap(values, name)
+	if !cfg.Usable() {
+		log.Printf("%s notification skipped: provider is not enabled, verified, and configured", name)
+		return
+	}
+	provider := NewHTTPProvider(cfg)
+	request := NotificationRequest{
+		Provider: name, Recipient: recipient,
+		Subject:  fmt.Sprintf("Firepager Alert: %s #%s", msg.CallType, msg.IncidentNumber),
+		Body:     buildNotificationContent(msg),
+		Metadata: map[string]string{"user": user.Email},
+	}
+	if err := provider.Send(context.Background(), request); err != nil {
+		log.Printf("%s notification failed: %v", name, err)
+	}
+}
+
+func buildNotificationContent(msg *models.Message) string {
+	return fmt.Sprintf("Alert\nIncident: %s\nAddress: %s\nVehicles: %s\nStation: %s\n\n%s",
+		msg.IncidentNumber, msg.Address, formatVehicles(msg.Vehicles), msg.Station, msg.Text)
 }
 
 func sendPushover(user *models.User, msg *models.Message) {

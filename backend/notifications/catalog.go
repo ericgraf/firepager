@@ -18,34 +18,43 @@ type channelDefinition struct {
 
 var channelDefinitions = []channelDefinition{
 	{"sms", "SMS", true, smsConfigured, func(c map[string]string) bool { return configTruthy(c["SMS_GATEWAY_ENABLED"]) }},
-	{"email", "Email", false, func(_ map[string]string, u *models.User) bool { return u != nil && strings.TrimSpace(u.Email) != "" }, alwaysEnabled},
-	// push is retained as a legacy subscription identifier. Web Push is the
-	// explicit catalog identifier for a future provider-backed implementation.
-	{"push", "Push (legacy)", false, genericConfigured("PUSH"), genericEnabled("PUSH")},
+	{"email", "Email", true, func(c map[string]string, u *models.User) bool {
+		return u != nil && strings.TrimSpace(u.Email) != "" && providerConfigured(c, "EMAIL")
+	}, genericEnabled("EMAIL")},
+	// push is retained as a legacy subscription identifier. web_push is the
+	// explicit provider-backed Web Push adapter.
+	{"push", "Push (legacy)", true, genericConfigured("PUSH"), genericEnabled("PUSH")},
 	{"whatsapp", "WhatsApp", false, whatsappConfigured, func(c map[string]string) bool { return configTruthy(c["WHATSAPP_GATEWAY_ENABLED"]) }},
-	{"telegram", "Telegram", false, genericConfigured("TELEGRAM"), genericEnabled("TELEGRAM")},
-	{"signal", "Signal", false, genericConfigured("SIGNAL"), genericEnabled("SIGNAL")},
+	{"telegram", "Telegram", true, genericConfigured("TELEGRAM"), genericEnabled("TELEGRAM")},
+	{"signal", "Signal", true, genericConfigured("SIGNAL"), genericEnabled("SIGNAL")},
 	{"pushover", "Pushover", true, func(_ map[string]string, u *models.User) bool {
 		return u != nil && strings.TrimSpace(u.PushoverUserKey) != "" && strings.TrimSpace(u.PushoverAppToken) != ""
 	}, alwaysEnabled},
-	{"ntfy", "ntfy", false, genericConfigured("NTFY"), genericEnabled("NTFY")},
-	{"web_push", "Web Push", false, genericConfigured("WEB_PUSH"), genericEnabled("WEB_PUSH")},
-	{"discord", "Discord", false, genericConfigured("DISCORD"), genericEnabled("DISCORD")},
-	{"slack", "Slack", false, genericConfigured("SLACK"), genericEnabled("SLACK")},
-	{"teams", "Microsoft Teams", false, genericConfigured("TEAMS"), genericEnabled("TEAMS")},
-	{"voice", "Voice", false, genericConfigured("VOICE"), genericEnabled("VOICE")},
+	{"ntfy", "ntfy", true, genericConfigured("NTFY"), genericEnabled("NTFY")},
+	{"web_push", "Web Push", true, genericConfigured("WEB_PUSH"), genericEnabled("WEB_PUSH")},
+	{"discord", "Discord", true, genericConfigured("DISCORD"), genericEnabled("DISCORD")},
+	{"slack", "Slack", true, genericConfigured("SLACK"), genericEnabled("SLACK")},
+	{"teams", "Microsoft Teams", true, genericConfigured("TEAMS"), genericEnabled("TEAMS")},
+	{"voice", "Voice", true, genericConfigured("VOICE"), genericEnabled("VOICE")},
 }
 
 func alwaysEnabled(_ map[string]string) bool { return true }
 
 func genericEnabled(id string) func(map[string]string) bool {
-	return func(config map[string]string) bool { return configTruthy(config[id+"_ENABLED"]) }
+	return func(config map[string]string) bool { return configTruthy(providerConfigValue(config, id+"_ENABLED")) }
 }
 
 func genericConfigured(id string) func(map[string]string, *models.User) bool {
 	return func(config map[string]string, _ *models.User) bool {
-		return strings.TrimSpace(config[id+"_URL"]) != "" || strings.TrimSpace(config[id+"_TOKEN"]) != ""
+		// Configured is an inventory signal (a token or endpoint exists). The
+		// stricter HTTP adapter check below controls Usable.
+		return providerConfigValue(config, id+"_URL") != "" || providerConfigValue(config, id+"_TOKEN") != ""
 	}
+}
+
+func providerConfigured(config map[string]string, id string) bool {
+	c := ProviderConfigFromMap(config, id)
+	return c.Configured()
 }
 
 func smsConfigured(config map[string]string, _ *models.User) bool {
@@ -76,12 +85,25 @@ func BuildChannelCatalog(config map[string]string, user *models.User) []models.N
 		configured := definition.configured(config, user)
 		verified := configured && configTruthy(config[strings.ToUpper(definition.id)+"_VERIFIED"])
 		enabled := definition.enabled(config)
+		ready := providerReady(config, definition.id, configured)
 		result = append(result, models.NotificationChannelCatalog{
 			ID: definition.id, Label: definition.label, Supported: true,
 			Configured: configured, Verified: verified, Disabled: !enabled,
 			DeliveryImplemented: definition.deliveryImplemented,
-			Usable:              configured && verified && enabled && definition.deliveryImplemented,
+			Usable:              configured && verified && enabled && definition.deliveryImplemented && ready,
 		})
 	}
 	return result
+}
+
+func providerReady(config map[string]string, id string, configured bool) bool {
+	if !configured {
+		return false
+	}
+	switch id {
+	case "email", "push", "telegram", "signal", "ntfy", "web_push", "discord", "slack", "teams", "voice":
+		return providerConfigured(config, id)
+	default:
+		return true
+	}
 }
