@@ -140,6 +140,24 @@ class HardeningTests(unittest.TestCase):
             os.killpg = old_killpg
         self.assertEqual(sent, [(123, signal.SIGTERM), (123, signal.SIGKILL)])
 
+    def test_process_group_is_signalled_even_when_shell_leader_exited(self):
+        class ExitedProcess:
+            pid = 456
+            stdout = None
+            def poll(self):
+                return 0
+            def wait(self, timeout=None):
+                return 0
+
+        sent = []
+        old_killpg = os.killpg
+        os.killpg = lambda pid, sig: sent.append((pid, sig))
+        try:
+            client.terminate_process_group(ExitedProcess())
+        finally:
+            os.killpg = old_killpg
+        self.assertEqual(sent, [(456, signal.SIGTERM)])
+
 
 if __name__ == "__main__":
     unittest.main()

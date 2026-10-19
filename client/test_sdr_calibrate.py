@@ -1,9 +1,56 @@
 import unittest
+import os
+import subprocess
+import tempfile
 
 import sdr_calibrate
 
 
 class CalibrationTests(unittest.TestCase):
+    def test_device_lock_is_exclusive_and_releases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "rtl.lock")
+            first = sdr_calibrate.SDRDeviceLock(path)
+            second = sdr_calibrate.SDRDeviceLock(path)
+            first.acquire(timeout=0)
+            try:
+                with self.assertRaises(sdr_calibrate.DeviceBusyError):
+                    second.acquire(timeout=0)
+            finally:
+                first.release()
+            second.acquire(timeout=0)
+            second.release()
+
+    def test_rtl_power_nonzero_status_is_execution_failure(self):
+        class Result:
+            returncode = 7
+            stdout = ""
+            stderr = "No supported devices found"
+
+        with self.assertRaises(sdr_calibrate.RTLPowerExecutionError) as raised:
+            sdr_calibrate.scan(99_900_000, "38", runner=lambda *a, **k: Result(),
+                               lock_path=os.path.join(tempfile.gettempdir(),
+                                                       "firepager-test.lock"),
+                               retries=0)
+        self.assertIn("No supported devices", str(raised.exception))
+
+    def test_scan_retries_bounded_execution_failure(self):
+        calls = [0]
+        class Result:
+            returncode = 0
+            stdout = "date,time,99900000,100100000,10000,1,-80,-40,-70\n"
+        def runner(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise subprocess.CalledProcessError(1, "rtl_power", stderr="busy")
+            return Result()
+        result = sdr_calibrate.scan(99_900_000, "38", runner=runner,
+                                    lock_path=os.path.join(tempfile.gettempdir(),
+                                                            "firepager-test.lock"),
+                                    retries=1, sleep=lambda _: None)
+        self.assertEqual(result[0], 99_910_000.0)
+        self.assertEqual(calls[0], 2)
+
     def test_scheduler_jitter_bounds_with_injected_randomness(self):
         class Clock:
             value = 100

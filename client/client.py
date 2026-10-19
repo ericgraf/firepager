@@ -24,10 +24,12 @@ import pika
 
 try:
     from sdr_calibrate import (CalibrationScheduler, calibrate, calibrate_target,
-                               parse_station, target_ppm_candidates, validate_result)
+                               parse_station, target_ppm_candidates, validate_result,
+                               SDRDeviceLock, DeviceBusyError)
 except ImportError:  # Allows importing this module in minimal non-SDR tooling.
     CalibrationScheduler = calibrate = calibrate_target = parse_station = None
     target_ppm_candidates = validate_result = None
+    SDRDeviceLock = DeviceBusyError = None
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -149,14 +151,18 @@ def close_connection(connection):
 
 def terminate_process_group(process, timeout=5):
     """Stop the SDR pipeline and all of its children, without orphaning rtl_fm."""
-    if process is None or process.poll() is not None:
+    if process is None:
         return
     try:
+        # Do not use the leader's exit status as an indication that the shell
+        # pipeline is gone: rtl_fm/multimon can outlive the shell leader.
         os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=timeout)
+        if process.poll() is None:
+            process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=timeout)
+        if process.poll() is None:
+            process.wait(timeout=timeout)
     except ProcessLookupError:
         pass
     finally:
@@ -380,7 +386,12 @@ def main():
     )
     stopping = threading.Event()
     calibration_lock = threading.Lock()
+    # Held for the complete decoder lifetime; calibration acquires the same
+    # OS lock once per rtl_power scan after this is released.
+    decoder_lock = SDRDeviceLock() if SDRDeviceLock else None
     last_decoder_activity = time.monotonic()
+    decoder_failures = 0
+    decoder_retry_at = 0
     connection = channel = process = None
 
     def stop(_signum, _frame):
@@ -418,8 +429,27 @@ def main():
             # it before the RabbitMQ connect loop also avoids losing radio
             # time while a broker is down; the spool still buffers pages.
             if not mock_mode and (process is None or process.poll() is not None):
-                process = start_sdr(frequency, ppm=ppm, gain=gain)
-                last_decoder_activity = time.monotonic()
+                if process is not None:
+                    terminate_process_group(process)
+                    process = None
+                    if decoder_lock:
+                        decoder_lock.release()
+                now = time.monotonic()
+                if now >= decoder_retry_at:
+                    try:
+                        if decoder_lock:
+                            decoder_lock.acquire(timeout=0)
+                        process = start_sdr(frequency, ppm=ppm, gain=gain)
+                        decoder_failures = 0
+                        last_decoder_activity = now
+                    except DeviceBusyError:
+                        decoder_failures += 1
+                        decoder_retry_at = now + min(30, 2 ** min(decoder_failures, 5))
+                        logger.warning("RTL-SDR is busy; decoder start deferred")
+                    except Exception:
+                        if decoder_lock:
+                            decoder_lock.release()
+                        raise
             if connection is None or not connection.is_open:
                 close_connection(connection)
                 connection, channel = connect_rabbitmq(stopping)
@@ -436,6 +466,8 @@ def main():
                     # restarted immediately after calibration or failure.
                     terminate_process_group(process)
                     process = None
+                    if decoder_lock:
+                        decoder_lock.release()
                     try:
                         with calibration_lock:
                             ppm, gain = perform_calibration(stations, gain, calibration_file, stopping)
@@ -452,8 +484,25 @@ def main():
                     stopping.wait(10)
                     continue
                 if process is None or process.poll() is not None:
-                    process = start_sdr(frequency, ppm=ppm, gain=gain)
-                    last_decoder_activity = time.monotonic()
+                    now = time.monotonic()
+                    if now < decoder_retry_at:
+                        stopping.wait(min(1, decoder_retry_at - now))
+                        continue
+                    try:
+                        if decoder_lock:
+                            decoder_lock.acquire(timeout=0)
+                        process = start_sdr(frequency, ppm=ppm, gain=gain)
+                        decoder_failures = 0
+                        last_decoder_activity = now
+                    except DeviceBusyError:
+                        decoder_failures += 1
+                        decoder_retry_at = now + min(30, 2 ** min(decoder_failures, 5))
+                        logger.warning("RTL-SDR is busy; decoder start deferred")
+                        continue
+                    except Exception:
+                        if decoder_lock:
+                            decoder_lock.release()
+                        raise
                 # Do not leave shutdown blocked forever on a silent SDR pipe.
                 ready, _, _ = select.select([process.stdout], [], [], 1)
                 if not ready:
@@ -462,13 +511,29 @@ def main():
                 if line:
                     last_decoder_activity = time.monotonic()
                     line = line.strip()
+                    lower_line = line.lower()
+                    if ("rtl_fm" in lower_line and
+                            ("cannot open" in lower_line or "no supported" in lower_line
+                             or "no devices" in lower_line)):
+                        logger.warning("SDR decoder could not open the device: %s", line)
+                        terminate_process_group(process)
+                        process = None
+                        if decoder_lock:
+                            decoder_lock.release()
+                        decoder_failures += 1
+                        decoder_retry_at = time.monotonic() + min(30, 2 ** min(decoder_failures, 5))
+                        continue
                     if line:
                         spool.enqueue(message(client_id, line))
                         drain_spool(spool, connection, channel)
                 elif process.poll() is not None:
                     terminate_process_group(process)
                     process = None
-                    stopping.wait(1)
+                    if decoder_lock:
+                        decoder_lock.release()
+                    decoder_failures += 1
+                    decoder_retry_at = time.monotonic() + min(30, 2 ** min(decoder_failures, 5))
+                    stopping.wait(min(1, max(0, decoder_retry_at - time.monotonic())))
             except Exception as exc:
                 logger.error("Client work failed; retaining spool: %s", safe_error(exc))
                 close_connection(connection)
@@ -476,6 +541,8 @@ def main():
                 stopping.wait(1)
     finally:
         terminate_process_group(process)
+        if decoder_lock:
+            decoder_lock.release()
         if connection is not None and connection.is_open:
             try:
                 drain_spool(spool, connection, channel)

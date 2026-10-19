@@ -15,6 +15,84 @@ import subprocess
 import sys
 import random
 import math
+import errno
+import fcntl
+import hashlib
+import os
+import time
+
+
+class DeviceBusyError(RuntimeError):
+    """The configured RTL-SDR is already owned by another process."""
+
+
+class RTLPowerExecutionError(RuntimeError):
+    """rtl_power could not complete a scan (as opposed to no signal)."""
+
+
+def device_lock_path(environ=None):
+    """Return a stable lock path for one physical dongle.
+
+    A serial/device identifier is preferred.  The spool path is the fallback
+    because it is normally unique per deployed client and requires no device
+    probing (which could itself open the dongle).
+    """
+    environ = os.environ if environ is None else environ
+    explicit = environ.get("SDR_LOCK_PATH")
+    if explicit:
+        return explicit
+    identity = (environ.get("SDR_DEVICE") or environ.get("RTLSDR_DEVICE") or
+                environ.get("SDR_SERIAL") or environ.get("RTLSDR_SERIAL") or
+                environ.get("SDR_SPOOL_PATH") or environ.get("SPOOL_DB_PATH") or
+                "/var/lib/firepager/sdr-spool.sqlite3")
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return os.path.join(environ.get("SDR_LOCK_DIR", "/tmp"),
+                        "firepager-sdr-{}.lock".format(digest))
+
+
+class SDRDeviceLock:
+    """An inter-process, non-blocking lock for the RTL-SDR device."""
+
+    def __init__(self, path=None):
+        self.path = path or device_lock_path()
+        self._file = None
+
+    def acquire(self, timeout=30, retry_delay=0.25, sleep=time.sleep):
+        if self._file is not None:
+            return True
+        directory = os.path.dirname(os.path.abspath(self.path))
+        os.makedirs(directory, exist_ok=True)
+        self._file = open(self.path, "a+")
+        deadline = time.monotonic() + max(0, float(timeout))
+        try:
+            while True:
+                try:
+                    fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except OSError as exc:
+                    if exc.errno != errno.EWOULDBLOCK:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise DeviceBusyError("RTL-SDR lock is busy: {}".format(self.path))
+                    sleep(min(float(retry_delay), max(0, deadline - time.monotonic())))
+        except Exception:
+            self.release()
+            raise
+
+    def release(self):
+        if self._file is not None:
+            try:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            finally:
+                self._file.close()
+                self._file = None
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        self.release()
 
 
 def parse_station(value):
@@ -110,25 +188,68 @@ def applied_correction_ppm(observed_offset_ppm):
     return -float(observed_offset_ppm)
 
 
-def scan(station_hz, gain, ppm=0, runner=subprocess.run, timeout=30):
+def _run_scan(command, runner, timeout):
+    try:
+        result = runner(command, capture_output=True, text=True, timeout=timeout,
+                        check=True)
+        returncode = getattr(result, "returncode", 0)
+        if returncode:
+            stderr = getattr(result, "stderr", "") or ""
+            raise RTLPowerExecutionError(
+                "rtl_power exited with status {}{}".format(
+                    returncode, ": {}".format(stderr.strip()) if stderr.strip() else ""))
+        return result
+    except RTLPowerExecutionError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = getattr(exc, "stderr", "") or ""
+        raise RTLPowerExecutionError("rtl_power scan failed: {}{}".format(
+            exc, ": {}".format(detail.strip()) if detail.strip() else "")) from exc
+
+
+def _scan_with_lock(command, runner, timeout, lock_path=None, lock_timeout=30,
+                    retries=2, retry_delay=0.5, sleep=time.sleep):
+    """Run a bounded number of scans, taking the OS lock for every attempt."""
+    last_error = None
+    for attempt in range(max(1, int(retries) + 1)):
+        try:
+            lock = SDRDeviceLock(lock_path)
+            lock.acquire(timeout=lock_timeout, retry_delay=retry_delay, sleep=sleep)
+            try:
+                return _run_scan(command, runner, timeout)
+            finally:
+                lock.release()
+        except (DeviceBusyError, RTLPowerExecutionError) as exc:
+            last_error = exc
+            if attempt >= max(1, int(retries)):
+                raise
+            sleep(float(retry_delay) * (2 ** attempt))
+    raise last_error  # pragma: no cover - loop always returns or raises
+
+
+def scan(station_hz, gain, ppm=0, runner=subprocess.run, timeout=30,
+         lock_path=None, lock_timeout=30, retries=2, retry_delay=0.5,
+         sleep=time.sleep):
     """Scan one FM carrier.  ``runner`` is injectable for unit tests."""
     width = 100_000
     start, end = int(station_hz - width), int(station_hz + width)
     command = ["rtl_power", "-f", f"{start}:{end}:1000", "-g", str(gain),
                "-p", str(ppm), "-1"]
-    result = runner(command, capture_output=True, text=True, timeout=timeout,
-                    check=True)
+    result = _scan_with_lock(command, runner, timeout, lock_path, lock_timeout,
+                             retries, retry_delay, sleep)
     return strongest_frequency(result.stdout)
 
 
-def scan_target(target_hz, gain, ppm=0, runner=subprocess.run, timeout=30):
+def scan_target(target_hz, gain, ppm=0, runner=subprocess.run, timeout=30,
+                lock_path=None, lock_timeout=30, retries=2, retry_delay=0.5,
+                sleep=time.sleep):
     """Scan only the known pager band; this is receive-only."""
     width = 100_000
     start, end = int(float(target_hz) - width), int(float(target_hz) + width)
     command = ["rtl_power", "-f", f"{start}:{end}:1000", "-g", str(gain),
                "-p", str(ppm), "-1"]
-    result = runner(command, capture_output=True, text=True, timeout=timeout,
-                    check=True)
+    result = _scan_with_lock(command, runner, timeout, lock_path, lock_timeout,
+                             retries, retry_delay, sleep)
     return target_signal_score(result.stdout, target_hz)
 
 

@@ -31,6 +31,10 @@ gain. Configure these variables in the client container:
 * `SDR_CALIBRATE_TARGET_REPEATS` — complete candidate sweeps required for
   repeatability (default `2`). Minimum prominence and margin default to 6 dB
   and 1 dB respectively.
+* `SDR_DEVICE` / `SDR_SERIAL` — optional stable dongle identity used to share
+  the OS lock between clients and calibration commands. `SDR_LOCK_PATH` can
+  override the lock file; otherwise a hash of the identity (or spool path) is
+  stored under `/tmp`.
 
 Calibration interval and jitter must be non-negative numbers, and
 `SDR_CALIBRATE_MIN_STATIONS` must be a positive integer. Invalid calibration
@@ -68,8 +72,11 @@ python3 /app/sdr_calibrate.py --target "$PAGER_FREQ" --gain 49 \
 
 Target calibration runs by default. Each candidate is scanned repeatedly with
 `rtl_power`; weak, absent, or ambiguous signals do not replace the configured
-or last-known-good PPM. Startup calibration runs before `rtl_fm` starts, so the
-dongle is never shared by two processes.
+or last-known-good PPM. Startup calibration runs before `rtl_fm` starts, and an
+OS-level lock is held for the decoder lifetime (and reacquired for every scan),
+so separate client/calibration processes cannot share one dongle. Device-open
+failures are retried with bounded backoff; signal-quality failures retain the
+last-known-good values.
 
 ## Periodic calibration
 
