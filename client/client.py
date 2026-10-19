@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import tempfile
+import math
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
@@ -187,6 +188,66 @@ def calibration_stations(value):
     return [parse_station(item.strip()) for item in value.split(",") if item.strip()]
 
 
+def environment_float(name, default, minimum=None, maximum=None, environ=None):
+    """Read a finite numeric setting, falling back instead of killing the client."""
+    raw = (os.environ if environ is None else environ).get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s=%r", name, raw)
+        return default
+    if (not math.isfinite(value) or (minimum is not None and value < minimum)
+            or (maximum is not None and value > maximum)):
+        logger.warning("Ignoring out-of-range %s=%r", name, raw)
+        return default
+    return value
+
+
+def validate_sdr_setting(value, name, default, minimum=None, maximum=None):
+    """Return a safe SDR setting while retaining a usable last-known-good value."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s=%r", name, value)
+        return default
+    if (not math.isfinite(number) or (minimum is not None and number < minimum)
+            or (maximum is not None and number > maximum)):
+        logger.warning("Ignoring out-of-range %s=%r", name, value)
+        return default
+    return str(value)
+
+
+def calibration_config(environ=None):
+    """Parse and validate calibration-related environment settings.
+
+    Keep this separate from ``main`` so startup configuration can be checked
+    without opening a broker connection or starting an SDR process.
+    """
+    environ = os.environ if environ is None else environ
+    stations_value = environ.get("SDR_CALIBRATE_STATIONS", "")
+    try:
+        stations = calibration_stations(stations_value) if stations_value and parse_station else []
+        interval = float(environ.get("SDR_CALIBRATE_INTERVAL", "0"))
+        jitter = float(environ.get("SDR_CALIBRATE_JITTER", "0"))
+        min_stations = int(environ.get("SDR_CALIBRATE_MIN_STATIONS", "1"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid SDR calibration environment configuration") from exc
+    if (not math.isfinite(interval) or not math.isfinite(jitter)
+            or interval < 0 or jitter < 0 or min_stations < 1):
+        raise ValueError("SDR calibration interval and jitter must be non-negative; minimum stations must be positive")
+    return {
+        "stations": stations,
+        "interval": interval,
+        "jitter": jitter,
+        "min_stations": min_stations,
+        "quiet_period": environment_float(
+            "SDR_CALIBRATE_QUIET_PERIOD", 5, minimum=0, environ=environ),
+        "on_start": environ.get("SDR_CALIBRATE_ON_START", "false").lower() == "true",
+    }
+
+
 def load_calibration(path):
     """Read only a complete, previously persisted calibration result."""
     try:
@@ -215,11 +276,21 @@ def save_calibration(path, value):
         raise
 
 
-def perform_calibration(stations, gain, path):
+class CalibrationAborted(Exception):
+    """Calibration was interrupted by client shutdown."""
+
+
+def perform_calibration(stations, gain, path, stop_event=None):
     """Run one receive-only calibration and persist it only on success."""
+    if stop_event is not None and stop_event.is_set():
+        raise CalibrationAborted()
     result = calibrate(stations, gain=gain)
-    minimum_stations = int(os.environ.get("SDR_CALIBRATE_MIN_STATIONS", "1"))
+    if stop_event is not None and stop_event.is_set():
+        raise CalibrationAborted()
+    minimum_stations = calibration_config()["min_stations"]
     validate_result(result, min_stations=minimum_stations)
+    if stop_event is not None and stop_event.is_set():
+        raise CalibrationAborted()
     save_calibration(path, result)
     return str(result["SDR_PPM"]), str(result["SDR_GAIN"])
 
@@ -247,18 +318,24 @@ def main():
     configured = load_calibration(calibration_file)
     ppm, gain = configured or ("0", "49")
     # Explicit environment values always win over a persisted calibration.
-    ppm = os.environ.get("SDR_PPM", ppm)
-    gain = os.environ.get("SDR_GAIN", gain)
-    stations_value = os.environ.get("SDR_CALIBRATE_STATIONS", "")
-    stations = calibration_stations(stations_value) if stations_value and parse_station else []
-    periodic_interval = float(os.environ.get("SDR_CALIBRATE_INTERVAL", "0"))
-    startup_calibration = os.environ.get("SDR_CALIBRATE_ON_START", "false").lower() == "true"
+    # Validate after applying overrides: a valid explicit override wins, while
+    # an invalid one cannot displace a usable persisted last-known-good value.
+    ppm = validate_sdr_setting(ppm, "SDR_PPM", "0", minimum=-200, maximum=200)
+    gain = validate_sdr_setting(gain, "SDR_GAIN", "49", minimum=0, maximum=100)
+    ppm = validate_sdr_setting(os.environ.get("SDR_PPM", ppm), "SDR_PPM", ppm,
+                               minimum=-200, maximum=200)
+    gain = validate_sdr_setting(os.environ.get("SDR_GAIN", gain), "SDR_GAIN", gain,
+                                minimum=0, maximum=100)
+    calibration = calibration_config()
+    stations = calibration["stations"]
+    periodic_interval = calibration["interval"]
+    startup_calibration = calibration["on_start"]
     scheduler = None
     periodic_enabled = bool(stations and periodic_interval > 0 and CalibrationScheduler)
     if stations and (periodic_enabled or startup_calibration) and CalibrationScheduler:
         scheduler = CalibrationScheduler(
             periodic_interval,
-            float(os.environ.get("SDR_CALIBRATE_JITTER", "0")),
+            calibration["jitter"],
         )
     mock_mode = os.environ.get("MOCK_SDR", "false").lower() == "true"
     spool = SQLiteSpool(
@@ -266,6 +343,7 @@ def main():
     )
     stopping = threading.Event()
     calibration_lock = threading.Lock()
+    last_decoder_activity = time.monotonic()
     connection = channel = process = None
 
     def stop(_signum, _frame):
@@ -279,7 +357,7 @@ def main():
         if scheduler and startup_calibration:
             try:
                 with calibration_lock:
-                    ppm, gain = perform_calibration(stations, gain, calibration_file)
+                    ppm, gain = perform_calibration(stations, gain, calibration_file, stopping)
                 if periodic_enabled:
                     scheduler.success()
                 logger.info("Startup SDR calibration succeeded: ppm=%s gain=%s", ppm, gain)
@@ -290,6 +368,12 @@ def main():
         elif periodic_enabled:
             scheduler.schedule()
         while not stopping.is_set():
+            # SDR reception does not depend on broker availability.  Starting
+            # it before the RabbitMQ connect loop also avoids losing radio
+            # time while a broker is down; the spool still buffers pages.
+            if not mock_mode and (process is None or process.poll() is not None):
+                process = start_sdr(frequency, ppm=ppm, gain=gain)
+                last_decoder_activity = time.monotonic()
             if connection is None or not connection.is_open:
                 close_connection(connection)
                 connection, channel = connect_rabbitmq(stopping)
@@ -297,6 +381,10 @@ def main():
                     break
             try:
                 if periodic_enabled and scheduler.due():
+                    quiet_for = time.monotonic() - last_decoder_activity
+                    if quiet_for < calibration.get("quiet_period", 5):
+                        scheduler.defer(calibration.get("quiet_period", 5) - quiet_for)
+                        continue
                     # rtl_power and rtl_fm cannot safely share one dongle.
                     # Stop only at this maintenance boundary; the process is
                     # restarted immediately after calibration or failure.
@@ -304,7 +392,7 @@ def main():
                     process = None
                     try:
                         with calibration_lock:
-                            ppm, gain = perform_calibration(stations, gain, calibration_file)
+                            ppm, gain = perform_calibration(stations, gain, calibration_file, stopping)
                         scheduler.success()
                         logger.info("Periodic SDR calibration succeeded: ppm=%s gain=%s", ppm, gain)
                     except Exception as exc:
@@ -319,12 +407,14 @@ def main():
                     continue
                 if process is None or process.poll() is not None:
                     process = start_sdr(frequency, ppm=ppm, gain=gain)
+                    last_decoder_activity = time.monotonic()
                 # Do not leave shutdown blocked forever on a silent SDR pipe.
                 ready, _, _ = select.select([process.stdout], [], [], 1)
                 if not ready:
                     continue
                 line = process.stdout.readline()
                 if line:
+                    last_decoder_activity = time.monotonic()
                     line = line.strip()
                     if line:
                         spool.enqueue(message(client_id, line))

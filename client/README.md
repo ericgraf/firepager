@@ -18,8 +18,15 @@ gain. Configure these variables in the client container:
   interval (default `0`).
 * `SDR_CALIBRATE_MIN_STATIONS` — minimum number of agreeing references required
   before committing a result (default `1`; use `2` for unattended operation).
+* `SDR_CALIBRATE_QUIET_PERIOD` — seconds without decoder activity before a
+  periodic scan may take ownership of the dongle (default `5`).
 * `SDR_CALIBRATION_FILE` — last-known-good JSON path (default
   `/var/lib/firepager/sdr-calibration.json`).
+
+Calibration interval and jitter must be non-negative numbers, and
+`SDR_CALIBRATE_MIN_STATIONS` must be a positive integer. Invalid calibration
+environment values are rejected at client startup; correct them rather than
+letting the client run with an unverified correction.
 
 ## Calibrate against FM broadcast
 
@@ -36,7 +43,9 @@ the median `SDR_PPM`, the chosen `SDR_GAIN`, and per-station measurements.
 Set the two values as container environment variables (or copy them from the
 JSON file) before starting FirePager. A positive reported PPM means the
 strongest measured bin was above the published frequency; `-p` is passed to
-`rtl_fm` as the correction.
+`rtl_fm` as the correction. The JSON also records the observed offset and an
+opposite-sign candidate correction; hardware-test the installed rtl-sdr build
+before changing the deployed sign.
 
 ## Periodic calibration
 
@@ -49,12 +58,16 @@ so concurrent maintenance requests cannot run two scans at once.
 Because `rtl_power` and `rtl_fm` cannot share one dongle, the current decoder
 process is stopped only at the scheduled maintenance boundary, calibration is
 bounded by the scanner timeout, and the decoder is restarted immediately.
+**Any in-band calibration causes a receive outage:** POCSAG pages cannot be
+decoded while `rtl_power` owns the dongle, including during startup calibration
+and each periodic maintenance scan. Schedule it during an acceptable outage
+window and monitor the client after the decoder restarts.
 Successful results are atomically written to the calibration file. A failed
 run keeps the previous values and exponentially backs off (up to eight base
 intervals), so a bad station does not continuously interrupt POCSAG capture.
-Reference estimates must agree within 3 ppm and remain within a 100 ppm safety
-range (200 ppm by default); set `SDR_CALIBRATE_MIN_STATIONS=2` to require
-independent references.
+Reference estimates must agree within 3 ppm and remain within the 200 ppm
+safety range; set `SDR_CALIBRATE_MIN_STATIONS=2` to require independent
+references.
 If no previous file exists, the explicitly configured `SDR_PPM`/`SDR_GAIN`
 remain in effect.
 

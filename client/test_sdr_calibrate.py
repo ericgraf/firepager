@@ -62,6 +62,31 @@ class CalibrationTests(unittest.TestCase):
         self.assertIn("-g", calls[0])
         self.assertIn("38", calls[0])
 
+    def test_calibrate_validates_multiple_mocked_stations(self):
+        calls = []
+        outputs = {
+            "99800000": "date,time,99900000,100100000,10000,1,-80,-40,-70\n",
+            "101000000": "date,time,101100000,101300000,10000,1,-80,-40,-70\n",
+        }
+
+        class Result:
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            scan_range = command[command.index("-f") + 1]
+            return Result(outputs[scan_range.split(":", 1)[0]])
+
+        result = sdr_calibrate.calibrate(
+            [("local", 99_900_000), ("news", 101_100_000)],
+            gain="38", runner=runner,
+        )
+        self.assertEqual([item["station"] for item in result["stations"]], ["local", "news"])
+        self.assertAlmostEqual(result["SDR_PPM"], 99.51, places=2)
+        self.assertEqual(len(calls), 2)
+        sdr_calibrate.validate_result(result, min_stations=2)
+
     def test_rejects_disagreeing_reference_stations(self):
         result = {"SDR_PPM": 0, "SDR_GAIN": "38", "stations": [
             {"ppm": 2.0}, {"ppm": 9.0},
@@ -75,6 +100,17 @@ class CalibrationTests(unittest.TestCase):
         ]}
         with self.assertRaises(ValueError):
             sdr_calibrate.validate_result(result)
+
+    def test_scheduler_applies_jitter_after_backoff(self):
+        class Rng:
+            def uniform(self, low, high):
+                return high
+
+        scheduler = sdr_calibrate.CalibrationScheduler(10, 3, clock=lambda: 0,
+                                                        rng=Rng(), max_backoff=25)
+        self.assertEqual(scheduler.failure(0), 13)
+        self.assertEqual(scheduler.failure(0), 23)
+        self.assertEqual(scheduler.failure(0), 28)
 
 
 if __name__ == "__main__":

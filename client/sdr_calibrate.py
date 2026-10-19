@@ -14,15 +14,21 @@ import statistics
 import subprocess
 import sys
 import random
+import math
 
 
 def parse_station(value):
     """Parse NAME=frequency or frequency (Hz, or MHz with a decimal)."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("station must include a frequency")
     if "=" in value:
         name, value = value.split("=", 1)
     else:
         name = value
-    frequency = float(value)
+    name = name.strip()
+    frequency = float(value.strip())
+    if not name or not math.isfinite(frequency) or frequency <= 0:
+        raise ValueError("station name and frequency must be valid")
     if frequency < 1_000_000:
         frequency *= 1_000_000
     return name, frequency
@@ -51,8 +57,18 @@ def strongest_frequency(csv_text):
 
 
 def estimate_ppm(known_hz, measured_hz):
-    """Estimate correction from a carrier's measured and known frequency."""
+    """Return the observed oscillator offset (measured minus known), in ppm."""
     return (measured_hz - known_hz) / known_hz * 1_000_000
+
+
+def applied_correction_ppm(observed_offset_ppm):
+    """Convert observed offset to rtl-sdr's correction sign.
+
+    ``rtl_fm -p`` corrects the oscillator error, so a carrier observed high
+    requires a negative applied correction (and vice versa).  Keep the raw
+    observation in calibration JSON so this sign convention is auditable.
+    """
+    return -float(observed_offset_ppm)
 
 
 def scan(station_hz, gain, ppm=0, runner=subprocess.run, timeout=30):
@@ -72,12 +88,19 @@ def calibrate(stations, gain="49", runner=subprocess.run):
         measured_hz, power = scan(known_hz, gain, runner=runner)
         observations.append({
             "station": name, "known_hz": known_hz, "measured_hz": measured_hz,
-            "power_db": power, "ppm": estimate_ppm(known_hz, measured_hz),
+            "power_db": power,
+            "observed_offset_ppm": estimate_ppm(known_hz, measured_hz),
         })
     if not observations:
         raise ValueError("at least one station is required")
+    observed_offset = statistics.median(item["observed_offset_ppm"] for item in observations)
     result = {
-        "SDR_PPM": round(statistics.median(item["ppm"] for item in observations), 2),
+        # Keep the established operational sign until it is verified against
+        # the installed dongle/rtl-sdr build.  The raw observation and the
+        # alternative correction sign are recorded explicitly for audit.
+        "SDR_PPM": round(observed_offset, 2),
+        "observed_offset_ppm": round(observed_offset, 2),
+        "applied_correction_ppm": round(applied_correction_ppm(observed_offset), 2),
         "SDR_GAIN": str(gain), "stations": observations,
     }
     validate_result(result)
@@ -91,15 +114,29 @@ def validate_result(result, min_stations=1, max_spread_ppm=3.0, max_abs_ppm=200.
     Multiple references should agree closely; a single reference is allowed
     for initial setup, while deployments can require two or more.
     """
+    if not isinstance(result, dict):
+        raise ValueError("calibration result must be an object")
+    if min_stations < 1:
+        raise ValueError("minimum station count must be positive")
     observations = result.get("stations", [])
+    if not isinstance(observations, list):
+        raise ValueError("calibration stations must be a list")
     if len(observations) < min_stations:
         raise ValueError("not enough valid FM reference stations")
-    estimates = [float(item["ppm"]) for item in observations]
+    try:
+        estimates = [float(item.get("observed_offset_ppm", item.get("ppm")))
+                     for item in observations]
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("calibration station estimates are invalid")
+    if any(not math.isfinite(value) for value in estimates):
+        raise ValueError("calibration station estimates are not finite")
     candidate = statistics.median(estimates)
     if any(abs(value) > max_abs_ppm for value in estimates):
         raise ValueError("FM reference estimate is outside the safe PPM range")
     if any(abs(value - candidate) > max_spread_ppm for value in estimates):
         raise ValueError("FM reference estimates disagree")
+    # Preserve the deployed sign convention; see calibrate() for the explicit
+    # observed-vs-applied values recorded for later hardware verification.
     result["SDR_PPM"] = round(candidate, 2)
     return result
 
@@ -113,7 +150,8 @@ class CalibrationScheduler:
     """
 
     def __init__(self, interval, jitter=0, clock=None, rng=None, max_backoff=None):
-        if interval < 0 or jitter < 0:
+        if (not math.isfinite(float(interval)) or not math.isfinite(float(jitter))
+                or interval < 0 or jitter < 0):
             raise ValueError("calibration interval and jitter must be non-negative")
         self.interval = float(interval)
         self.jitter = float(jitter)
@@ -134,6 +172,13 @@ class CalibrationScheduler:
 
     def due(self, now=None):
         return self.due_at is not None and (self.clock() if now is None else now) >= self.due_at
+
+    def defer(self, delay, now=None):
+        """Move a due run out by a short operational quiet period."""
+        if not math.isfinite(float(delay)) or delay < 0:
+            raise ValueError("calibration defer delay must be non-negative")
+        self.due_at = (self.clock() if now is None else now) + float(delay)
+        return self.due_at
 
     def success(self, now=None):
         self.failures = 0

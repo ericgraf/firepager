@@ -55,6 +55,39 @@ class SpoolTests(unittest.TestCase):
 
 
 class HardeningTests(unittest.TestCase):
+    def test_invalid_calibration_environment_is_rejected(self):
+        with self.assertRaises(ValueError):
+            client.calibration_config({"SDR_CALIBRATE_INTERVAL": "not-a-number"})
+        with self.assertRaises(ValueError):
+            client.calibration_config({"SDR_CALIBRATE_JITTER": "-1"})
+        with self.assertRaises(ValueError):
+            client.calibration_config({"SDR_CALIBRATE_MIN_STATIONS": "0"})
+
+    def test_calibration_environment_parses_station_and_schedule(self):
+        config = client.calibration_config({
+            "SDR_CALIBRATE_STATIONS": "local=99.9,news=101.1",
+            "SDR_CALIBRATE_INTERVAL": "60",
+            "SDR_CALIBRATE_JITTER": "15",
+            "SDR_CALIBRATE_MIN_STATIONS": "2",
+            "SDR_CALIBRATE_ON_START": "true",
+        })
+        self.assertEqual(config["stations"], [("local", 99_900_000.0), ("news", 101_100_000.0)])
+        self.assertEqual((config["interval"], config["jitter"], config["min_stations"]), (60.0, 15.0, 2))
+        self.assertTrue(config["on_start"])
+
+    def test_calibration_file_is_last_known_good_and_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "nested", "calibration.json")
+            value = {"SDR_PPM": 1.25, "SDR_GAIN": "38", "stations": []}
+            client.save_calibration(path, value)
+            self.assertEqual(client.load_calibration(path), ("1.25", "38"))
+            with open(path, encoding="utf-8") as source:
+                self.assertEqual(__import__("json").load(source), value)
+
+            with open(path, "w", encoding="utf-8") as output:
+                output.write("not json")
+            self.assertIsNone(client.load_calibration(path))
+
     def test_sdr_command_includes_frequency_correction_and_gain(self):
         old = client.subprocess.Popen
         commands = []
