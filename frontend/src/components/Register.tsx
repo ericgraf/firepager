@@ -8,7 +8,7 @@ export function Register() {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
+  const [inviteCode, setInviteCode] = useState(() => new URLSearchParams(window.location.search).get('invite_code') || new URLSearchParams(window.location.search).get('invite') || '');
   const [error, setError] = useState('');
   
   const { login } = useAuth();

@@ -878,6 +878,31 @@ button:hover {
   color: #991b1b;
 }
 
+.invite-expired {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.invite-revoked {
+  background: var(--code-bg);
+  color: var(--text);
+}
+
+.invite-management { margin-bottom: 0; }
+.invite-management .card-header { margin-bottom: 16px; }
+.invite-loading { color: var(--text); padding: 14px 0; }
+.invite-list { display: flex; flex-direction: column; gap: 10px; }
+.invite-item { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.invite-item:last-child { border-bottom: 0; }
+.invite-code-row, .invite-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.invite-item-main .small-text { margin-top: 6px; }
+.invite-actions { justify-content: flex-end; }
+
+@media (max-width: 600px) {
+  .invite-item { align-items: flex-start; flex-direction: column; }
+  .invite-actions { justify-content: flex-start; }
+}
+
 .empty-table-cell {
   text-align: center;
   color: #666;

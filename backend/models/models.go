@@ -75,14 +75,16 @@ type CatalogEntry struct {
 }
 
 type Invite struct {
-	ID            int       `json:"id"`
-	Code          string    `json:"code"`
-	CreatedAt     time.Time `json:"created_at"`
-	CreatedBy     int       `json:"created_by"`
-	CreatedByName string    `json:"created_by_name,omitempty"`
-	IsUsed        bool      `json:"is_used"`
-	UsedBy        *int      `json:"used_by"`
-	UsedByName    string    `json:"used_by_name,omitempty"`
+	ID            int        `json:"id"`
+	Code          string     `json:"code"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	CreatedBy     int        `json:"created_by"`
+	CreatedByName string     `json:"created_by_name,omitempty"`
+	IsUsed        bool       `json:"is_used"`
+	UsedBy        *int       `json:"used_by"`
+	UsedByName    string     `json:"used_by_name,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 }
 
 type SystemConfig struct {

@@ -23,10 +23,148 @@ interface Invite {
   id: number;
   code: string;
   created_at: string;
+  expires_at?: string | null;
+  expiresAt?: string | null;
+  link?: string;
+  invite_url?: string;
+  revoked_at?: string | null;
   created_by_name?: string;
   is_used: boolean;
   used_by: number | null;
   used_by_name?: string;
+}
+
+const inviteApiPaths = ['/api/invites', '/api/profile/invites'];
+
+function inviteExpiry(invite: Invite) {
+  const value = invite.expires_at || invite.expiresAt;
+  return value ? new Date(value) : null;
+}
+
+function inviteIsExpired(invite: Invite) {
+  const expiry = inviteExpiry(invite);
+  return Boolean(expiry && !Number.isNaN(expiry.getTime()) && expiry.getTime() <= Date.now() && !invite.is_used);
+}
+
+function inviteStatus(invite: Invite) {
+  if (invite.is_used) return 'Used';
+  if (invite.revoked_at) return 'Revoked';
+  if (inviteIsExpired(invite)) return 'Expired';
+  return 'Active';
+}
+
+function inviteLink(invite: Invite) {
+  return invite.link || invite.invite_url || `${window.location.origin}/register?invite_code=${encodeURIComponent(invite.code)}`;
+}
+
+function InviteManagement({ token }: { token: string | null }) {
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const requestInvites = async (options?: RequestInit) => {
+    let response: Response | null = null;
+    for (const path of inviteApiPaths) {
+      response = await fetch(path, {
+        ...options,
+        headers: { Authorization: `Bearer ${token}`, ...(options?.headers || {}) },
+      });
+      if (response.status !== 404 && response.status !== 405) break;
+    }
+    if (!response) throw new Error('Unable to reach the invitation service.');
+    return response;
+  };
+
+  const loadInvites = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await requestInvites();
+      if (!response.ok) throw new Error('Unable to load invitations. Please try again.');
+      const data = await response.json();
+      setInvites(Array.isArray(data) ? data : (data.invites || data.invitations || []));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load invitations.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { if (token) loadInvites(); }, [token]);
+
+  const createInvite = async () => {
+    setCreating(true);
+    setError('');
+    setNotice('');
+    try {
+      const response = await requestInvites({ method: 'POST' });
+      if (!response.ok) throw new Error('Unable to create an invitation. Please try again.');
+      const data = await response.json();
+      const created = data.invite || data;
+      setInvites((current) => [created, ...current]);
+      setNotice('Invitation created. Copy the code or link to share it.');
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : 'Unable to create an invitation.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyInvite = async (invite: Invite, value: string) => {
+    setError('');
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(`${invite.id}-${value}`);
+      setNotice('Copied to clipboard.');
+      window.setTimeout(() => setCopied(null), 1800);
+    } catch {
+      setError('Copy failed. Select and copy the invitation manually.');
+    }
+  };
+
+  return (
+    <section className="card invite-management" aria-labelledby="invite-heading">
+      <div className="card-header">
+        <div>
+          <h2 id="invite-heading">Invite someone to FirePager</h2>
+          <p className="small-text">Create a one-time invitation and share its code or link. Invitations may expire.</p>
+        </div>
+        <button type="button" onClick={createInvite} disabled={creating} aria-busy={creating}>
+          {creating ? 'Creating…' : 'Create invitation'}
+        </button>
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+      {notice && <div className="subscription-notice" role="status">{notice}</div>}
+      {loading ? <p className="invite-loading" role="status">Loading invitations…</p> : invites.length === 0 ? (
+        <p className="empty-state">You have not created any invitations yet.</p>
+      ) : (
+        <div className="invite-list">
+          {invites.map((invite) => {
+            const link = inviteLink(invite);
+            const status = inviteStatus(invite);
+            const expiry = inviteExpiry(invite);
+            return <article className="invite-item" key={invite.id}>
+              <div className="invite-item-main">
+                <div className="invite-code-row"><code>{invite.code}</code><span className={`badge invite-${status.toLowerCase()}`}>{status}</span></div>
+                <p className="small-text">Created {new Date(invite.created_at).toLocaleDateString()} · {invite.is_used ? 'Redeemed' : expiry ? `Expires ${expiry.toLocaleDateString()}` : 'No expiry provided'}</p>
+              </div>
+              {!invite.is_used && !invite.revoked_at && !inviteIsExpired(invite) && <div className="invite-actions">
+                <button type="button" className="secondary-button" onClick={() => copyInvite(invite, invite.code)} aria-label={`Copy invitation code ${invite.code}`}>
+                  {copied === `${invite.id}-${invite.code}` ? 'Copied' : 'Copy code'}
+                </button>
+                <button type="button" className="secondary-button" onClick={() => copyInvite(invite, link)} aria-label={`Copy invitation link for ${invite.code}`}>
+                  {copied === `${invite.id}-${link}` ? 'Copied' : 'Copy link'}
+                </button>
+              </div>}
+            </article>;
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 interface TagInputProps {
@@ -487,6 +625,8 @@ export function Profile() {
           </div>
         </form>
       </div>
+
+      <InviteManagement token={token} />
 
       {profile?.role === 'admin' && (
         <div className="card">

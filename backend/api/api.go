@@ -39,6 +39,9 @@ func SetupRouter() *gin.Engine {
 			protected.PUT("/profile/subscriptions", UpdateSubscriptionSettingsHandler)
 			protected.GET("/profile/subscriptions/catalog", GetSubscriptionCatalogHandler)
 			protected.GET("/configs", getConfigs)
+			protected.GET("/invites", GetMyInvitesHandler)
+			protected.POST("/invites", CreateInviteHandler)
+			protected.DELETE("/invites/:id", RevokeInviteHandler)
 
 			// Admin only routes
 			admin := protected.Group("/admin")

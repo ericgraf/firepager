@@ -95,8 +95,10 @@ func createSchema() {
 		code VARCHAR(100) UNIQUE NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		created_by INTEGER REFERENCES users(id),
+		expires_at TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
 		is_used BOOLEAN DEFAULT FALSE,
-		used_by INTEGER REFERENCES users(id)
+		used_by INTEGER REFERENCES users(id),
+		revoked_at TIMESTAMP NULL
 	);
 
 	-- Add columns to users if they don't exist (for existing DBs)
@@ -134,6 +136,14 @@ func createSchema() {
 
 		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='invited_by') THEN
 			ALTER TABLE users ADD COLUMN invited_by INTEGER REFERENCES users(id);
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='invites' AND column_name='expires_at') THEN
+			ALTER TABLE invites ADD COLUMN expires_at TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days');
+		END IF;
+
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='invites' AND column_name='revoked_at') THEN
+			ALTER TABLE invites ADD COLUMN revoked_at TIMESTAMP NULL;
 		END IF;
 
 		IF EXISTS (
@@ -640,8 +650,8 @@ func UpdateMessageCoordinates(messageID string, latitude, longitude float64) err
 }
 
 func CreateInvite(invite *models.Invite) error {
-	query := "INSERT INTO invites (code, created_by) VALUES ($1, $2) RETURNING id, created_at"
-	return DB.QueryRow(query, invite.Code, invite.CreatedBy).Scan(&invite.ID, &invite.CreatedAt)
+	query := "INSERT INTO invites (code, created_by, expires_at) VALUES ($1, $2, $3) RETURNING id, created_at, expires_at"
+	return DB.QueryRow(query, invite.Code, invite.CreatedBy, invite.ExpiresAt).Scan(&invite.ID, &invite.CreatedAt, &invite.ExpiresAt)
 }
 
 func GetInviteByCode(code string) (*models.Invite, error) {
@@ -653,9 +663,11 @@ func GetInviteByCode(code string) (*models.Invite, error) {
 			i.created_at,
 			i.created_by,
 			COALESCE(creator.name, ''),
+			i.expires_at,
 			i.is_used,
 			i.used_by,
-			COALESCE(used_user.name, '')
+			COALESCE(used_user.name, ''),
+			i.revoked_at
 		FROM invites i
 		LEFT JOIN users creator ON creator.id = i.created_by
 		LEFT JOIN users used_user ON used_user.id = i.used_by
@@ -667,9 +679,11 @@ func GetInviteByCode(code string) (*models.Invite, error) {
 		&inv.CreatedAt,
 		&inv.CreatedBy,
 		&inv.CreatedByName,
+		&inv.ExpiresAt,
 		&inv.IsUsed,
 		&inv.UsedBy,
 		&inv.UsedByName,
+		&inv.RevokedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -678,7 +692,7 @@ func GetInviteByCode(code string) (*models.Invite, error) {
 }
 
 func MarkInviteUsed(code string, userID int) error {
-	query := "UPDATE invites SET is_used = TRUE, used_by = $1 WHERE code = $2"
+	query := "UPDATE invites SET is_used = TRUE, used_by = $1 WHERE code = $2 AND NOT is_used AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"
 	_, err := DB.Exec(query, userID, code)
 	return err
 }
@@ -691,9 +705,11 @@ func GetInvites() ([]models.Invite, error) {
 			i.created_at,
 			i.created_by,
 			COALESCE(creator.name, ''),
+			i.expires_at,
 			i.is_used,
 			i.used_by,
-			COALESCE(used_user.name, '')
+			COALESCE(used_user.name, ''),
+			i.revoked_at
 		FROM invites i
 		LEFT JOIN users creator ON creator.id = i.created_by
 		LEFT JOIN users used_user ON used_user.id = i.used_by
@@ -708,12 +724,84 @@ func GetInvites() ([]models.Invite, error) {
 	var invites []models.Invite
 	for rows.Next() {
 		var inv models.Invite
-		if err := rows.Scan(&inv.ID, &inv.Code, &inv.CreatedAt, &inv.CreatedBy, &inv.CreatedByName, &inv.IsUsed, &inv.UsedBy, &inv.UsedByName); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.Code, &inv.CreatedAt, &inv.CreatedBy, &inv.CreatedByName, &inv.ExpiresAt, &inv.IsUsed, &inv.UsedBy, &inv.UsedByName, &inv.RevokedAt); err != nil {
 			return nil, err
 		}
 		invites = append(invites, inv)
 	}
 	return invites, nil
+}
+
+// GetInvitesForUser returns only invites created by the authenticated user.
+func GetInvitesForUser(userID int) ([]models.Invite, error) {
+	// Keep the query and scan shape identical to GetInvites while restricting ownership.
+	query := `SELECT i.id, i.code, i.created_at, i.created_by, COALESCE(creator.name, ''), i.expires_at,
+		i.is_used, i.used_by, COALESCE(used_user.name, ''), i.revoked_at
+		FROM invites i LEFT JOIN users creator ON creator.id = i.created_by LEFT JOIN users used_user ON used_user.id = i.used_by
+		WHERE i.created_by = $1 ORDER BY i.created_at DESC`
+	rows, err := DB.Query(query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var invites []models.Invite
+	for rows.Next() {
+		var inv models.Invite
+		if err := rows.Scan(&inv.ID, &inv.Code, &inv.CreatedAt, &inv.CreatedBy, &inv.CreatedByName, &inv.ExpiresAt, &inv.IsUsed, &inv.UsedBy, &inv.UsedByName, &inv.RevokedAt); err != nil {
+			return nil, err
+		}
+		invites = append(invites, inv)
+	}
+	return invites, rows.Err()
+}
+
+func RevokeInvite(id, userID int, admin bool) error {
+	query := "UPDATE invites SET revoked_at = CURRENT_TIMESTAMP WHERE id = $1 AND revoked_at IS NULL AND NOT is_used"
+	args := []interface{}{id}
+	if !admin {
+		query += " AND created_by = $2"
+		args = append(args, userID)
+	}
+	result, err := DB.Exec(query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// AddUserWithInvite atomically locks and consumes an invite before inserting the user.
+func AddUserWithInvite(u *models.User, code string) error {
+	normalizeUserArrays(u)
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var inviter int
+	err = tx.QueryRow(`SELECT created_by FROM invites WHERE code = $1 AND NOT is_used AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP FOR UPDATE`, code).Scan(&inviter)
+	if err != nil {
+		return err
+	}
+	u.InvitedBy = &inviter
+	err = tx.QueryRow("INSERT INTO users (email, password_hash, name, phone_number, capcodes, vehicles, stations, call_types, role, notification_types, pushover_user_key, pushover_app_token, invited_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id", u.Email, u.PasswordHash, u.Name, u.PhoneNumber, pq.Array(u.Capcodes), pq.Array(u.Vehicles), pq.Array(u.Stations), pq.Array(u.CallTypes), u.Role, pq.Array(u.NotificationTypes), u.PushoverUserKey, u.PushoverAppToken, u.InvitedBy).Scan(&u.ID)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec("UPDATE invites SET is_used = TRUE, used_by = $1 WHERE code = $2", u.ID, code)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 func GetMetrics() (*models.Metrics, error) {

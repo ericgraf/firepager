@@ -2,11 +2,12 @@ package api
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,13 +77,6 @@ func RegisterHandler(c *gin.Context) {
 		return
 	}
 
-	// Verify invite code
-	invite, err := db.GetInviteByCode(req.InviteCode)
-	if err != nil || invite.IsUsed {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or already used invite code"})
-		return
-	}
-
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process password"})
@@ -96,16 +90,12 @@ func RegisterHandler(c *gin.Context) {
 		PhoneNumber:  req.PhoneNumber,
 		Capcodes:     req.Capcodes,
 		Role:         "user",
-		InvitedBy:    &invite.CreatedBy,
 	}
 
-	if err := db.AddUser(user); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+	if err := db.AddUserWithInvite(user, req.InviteCode); err != nil {
+		// Do not disclose whether a code exists, has expired, or was already used.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid, expired, revoked, or already used invite code"})
 		return
-	}
-
-	if err := db.MarkInviteUsed(req.InviteCode, user.ID); err != nil {
-		log.Printf("Failed to mark invite as used: %v", err)
 	}
 
 	token, err := generateToken(user)
@@ -200,6 +190,7 @@ func CreateInviteHandler(c *gin.Context) {
 	invite := &models.Invite{
 		Code:      code,
 		CreatedBy: creatorID.(int),
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
 	}
 
 	if err := db.CreateInvite(invite); err != nil {
@@ -229,6 +220,35 @@ func GetInvitesHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, invites)
+}
+
+func GetMyInvitesHandler(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	invites, err := db.GetInvitesForUser(userID.(int))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load invites"})
+		return
+	}
+	c.JSON(http.StatusOK, invites)
+}
+
+func RevokeInviteHandler(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid invite id"})
+		return
+	}
+	userID, _ := c.Get("user_id")
+	role, _ := c.Get("role")
+	if err := db.RevokeInvite(id, userID.(int), role == "admin"); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Invite not found or cannot be revoked"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke invite"})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func GetProfileHandler(c *gin.Context) {
