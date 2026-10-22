@@ -150,27 +150,54 @@ def _power_bins(csv_text):
     return bins
 
 
-def target_signal_score(csv_text, target_hz, band_hz=25_000):
-    """Score a target-band signal by peak prominence over the scan noise floor.
+def fsk_pair_score(csv_text, target_hz, band_hz=15_000,
+                   min_separation_hz=2_000, max_separation_hz=15_000):
+    """Estimate a POCSAG 2-FSK channel from its two frequency lobes.
 
-    The score deliberately uses only bins around ``target_hz``; a strong FM
-    station elsewhere in the scan cannot win a pager calibration.
+    POCSAG does not produce one continuous carrier peak.  This finds two
+    separated local maxima near the target and uses their midpoint as the
+    channel estimate.  A single peak is intentionally rejected.
     """
     bins = _power_bins(csv_text)
     if not bins:
         raise ValueError("rtl_power produced no usable CSV power bins")
-    nearby = [power for frequency, power in bins
+    nearby = [(frequency, power) for frequency, power in bins
               if abs(frequency - float(target_hz)) <= band_hz]
     if not nearby:
         raise ValueError("rtl_power produced no bins near the pager target")
-    peak = max(nearby)
     floor = statistics.median(power for _, power in bins)
+    peaks = []
+    for index in range(1, len(nearby) - 1):
+        frequency, power = nearby[index]
+        if power >= nearby[index - 1][1] and power >= nearby[index + 1][1]:
+            peaks.append((power, frequency))
+    pairs = []
+    for left_index, left in enumerate(peaks):
+        for right in peaks[left_index + 1:]:
+            separation = abs(right[1] - left[1])
+            if min_separation_hz <= separation <= max_separation_hz:
+                lower, upper = sorted((left, right), key=lambda item: item[1])
+                center = (lower[1] + upper[1]) / 2
+                prominence = min(lower[0], upper[0]) - floor
+                pairs.append((prominence, -abs(center - float(target_hz)), lower, upper, center))
+    if not pairs:
+        raise ValueError("no repeatable two-lobe FSK signal near pager target")
+    prominence, _alignment, lower, upper, center = max(pairs)
     return {
-        "peak_db": peak,
+        "lower_hz": lower[1],
+        "upper_hz": upper[1],
+        "center_hz": center,
+        "center_error_hz": center - float(target_hz),
+        "peak_db": max(lower[0], upper[0]),
         "noise_floor_db": floor,
-        "prominence_db": peak - floor,
-        "energy_db": statistics.mean(nearby),
+        "prominence_db": prominence,
+        "energy_db": statistics.mean(power for _, power in nearby),
     }
+
+
+def target_signal_score(csv_text, target_hz, band_hz=25_000):
+    """Compatibility wrapper returning a two-lobe POCSAG score."""
+    return fsk_pair_score(csv_text, target_hz, band_hz=band_hz)
 
 
 def estimate_ppm(known_hz, measured_hz):
@@ -284,12 +311,13 @@ def calibrate_target(target_hz, gain="49", candidates=None, repeats=2,
         for candidate in candidates:
             score = scan_target(target_hz, gain, ppm=candidate, runner=runner)
             observations[float(candidate)].append(score)
-            scored.append((score["prominence_db"], float(candidate)))
+            alignment = abs(float(score["center_error_hz"])) / 1000.0
+            scored.append((score["prominence_db"] - alignment, float(candidate)))
         winners.append(max(scored)[1])
     if len(set(winners)) != 1:
         raise ValueError("target signal did not produce a repeatable PPM winner")
     ranked = sorted(
-        ((statistics.mean(item["prominence_db"] for item in values), candidate)
+         ((statistics.mean(item["prominence_db"] - abs(item["center_error_hz"]) / 1000.0 for item in values), candidate)
          for candidate, values in observations.items()), reverse=True)
     best_score, best = ranked[0]
     margin = best_score - ranked[1][0]
@@ -299,10 +327,10 @@ def calibrate_target(target_hz, gain="49", candidates=None, repeats=2,
         raise ValueError("target PPM winner lacks sufficient confidence margin")
     result = {
         "SDR_PPM": round(best, 2), "SDR_GAIN": str(gain),
-        "target_hz": float(target_hz), "prominence_db": round(best_score, 2),
+         "target_hz": float(target_hz), "prominence_db": round(best_score, 2),
         "confidence_margin_db": round(margin, 2), "repeats": repeats,
         "target_candidates": [
-            {"ppm": candidate, "prominence_db": round(score, 2)}
+             {"ppm": candidate, "prominence_db": round(score, 2)}
             for score, candidate in ranked
         ],
     }

@@ -137,19 +137,31 @@ class CalibrationTests(unittest.TestCase):
     def test_target_calibration_uses_repeatable_prominent_target(self):
         calls = []
         class Result:
-            stdout = "date,time,155603223,155603423,10000,1,-80,-80,-80\n"
+            stdout = "date,time,155590000,155620000,1000,1," + ",".join(["-80"] * 31) + "\n"
         def runner(command, **kwargs):
             calls.append(command)
             ppm = float(command[command.index("-p") + 1])
-            Result.stdout = ("date,time,155603223,155603423,10000,1,-80,-25,-80\n"
-                             if ppm == 2 else
-                             "date,time,155603223,155603423,10000,1,-80,-78,-80\n")
+            values = ["-80"] * 31
+            if ppm == 2:
+                values[8] = "-25"
+                values[16] = "-24"
+            Result.stdout = "date,time,155590000,155620000,1000,1," + ",".join(values) + "\n"
             return Result()
         result = sdr_calibrate.calibrate_target(
             155603323, gain="38", candidates=[-1, 0, 1, 2, 3],
             repeats=2, runner=runner)
         self.assertEqual(result["SDR_PPM"], 2.0)
         self.assertEqual(len(calls), 10)
+
+    def test_fsk_pair_uses_midpoint_not_single_peak(self):
+        values = ["-80"] * 31
+        values[8], values[16] = "-20", "-21"
+        result = sdr_calibrate.fsk_pair_score(
+            "date,time,155590000,155620000,1000,1," + ",".join(values) + "\n",
+            155603323)
+        self.assertEqual(result["lower_hz"], 155598000.0)
+        self.assertEqual(result["upper_hz"], 155606000.0)
+        self.assertEqual(result["center_hz"], 155602000.0)
 
     def test_target_calibration_rejects_nonrepeatable_signal(self):
         class Result:
