@@ -87,6 +87,11 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(config["target_candidates"], [-4.0, -2.0, 0.0, 2.0, 4.0])
         self.assertEqual(config["target_repeats"], 3)
 
+    def test_sdr_mode_is_explicit_and_validated(self):
+        self.assertEqual(client.calibration_config({"SDR_MODE": "high_power"})["mode"], "high_power")
+        with self.assertRaises(ValueError):
+            client.calibration_config({"SDR_MODE": "turbo"})
+
     def test_calibration_file_is_last_known_good_and_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "nested", "calibration.json")

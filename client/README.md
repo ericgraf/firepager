@@ -1,5 +1,21 @@
 # RTL-SDR calibration and tuning
 
+## SDR modes
+
+`SDR_MODE` defaults to `legacy`, preserving the low-power `rtl_fm | multimon-ng`
+POCSAG pipeline. Set `SDR_MODE=high_power` only when an operator explicitly
+wants a single shared raw-IQ owner. The high-power process emits coarse
+waterfall bins and conservative two-lobe FSK diagnostics; it is **not a
+POCSAG demodulator** and does not emit decoded pages. `SDR_IQ_SAMPLE_RATE`
+defaults to `240000`. If `rtl_sdr` cannot open the device, the client logs a
+fallback marker and returns to the legacy pipeline.
+
+The high-power analyzer uses only the Python standard library, so no DSP
+dependency is added to the default image. It intentionally never derives a
+calibration value from one IQ block or from noise. Existing `rtl_power`
+calibration is disabled operationally in high-power mode; use a known,
+repeatable reference and the documented legacy calibration command instead.
+
 The client is receive-only: `rtl_fm` feeds `multimon-ng` and no transmit
 utility is used.  Each dongle can have a different crystal offset and RF
 gain. Configure these variables in the client container:

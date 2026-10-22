@@ -170,7 +170,7 @@ def terminate_process_group(process, timeout=5):
             process.stdout.close()
 
 
-def start_sdr(frequency, ppm=None, gain=None):
+def start_sdr(frequency, ppm=None, gain=None, mode=None):
     """Start the receive-only RTL-SDR -> multimon pipeline.
 
     ``-p`` corrects the dongle's crystal error and ``-g`` makes the gain
@@ -180,11 +180,19 @@ def start_sdr(frequency, ppm=None, gain=None):
     ppm = os.environ.get("SDR_PPM", "0") if ppm is None else str(ppm)
     gain = os.environ.get("SDR_GAIN", "49") if gain is None else str(gain)
     sample_rate = os.environ.get("SDR_SAMPLE_RATE", "22050")
-    command = (
+    mode = (os.environ.get("SDR_MODE", "legacy") if mode is None else mode).lower()
+    if mode == "high_power":
+        command = (
+            "python3 /app/sdr_high_power.py --frequency " + shlex.quote(str(frequency)) +
+            " --ppm " + shlex.quote(ppm) + " --gain " + shlex.quote(gain) +
+            " --sample-rate " + shlex.quote(os.environ.get("SDR_IQ_SAMPLE_RATE", "240000"))
+        )
+    else:
+        command = (
         f"rtl_fm -f {shlex.quote(str(frequency))} -s {shlex.quote(sample_rate)} "
         f"-p {shlex.quote(ppm)} -g {shlex.quote(gain)} | "
         "multimon-ng -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -f alpha -t raw /dev/stdin"
-    )
+        )
     logger.info("Starting SDR decoder")
     return subprocess.Popen(
         command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -255,6 +263,9 @@ def calibration_config(environ=None):
         target_candidates = target_ppm_candidates(target_start, target_end, target_step)
     except ValueError as exc:
         raise ValueError("invalid target SDR calibration candidate range") from exc
+    mode = environ.get("SDR_MODE", "legacy").lower()
+    if mode not in ("legacy", "high_power"):
+        raise ValueError("SDR_MODE must be legacy or high_power")
     return {
         "stations": stations,
         "interval": interval,
@@ -270,6 +281,7 @@ def calibration_config(environ=None):
             "SDR_CALIBRATE_TARGET_MIN_PROMINENCE", 6, minimum=0, environ=environ),
         "target_min_margin": environment_float(
             "SDR_CALIBRATE_TARGET_MIN_MARGIN", 1, minimum=0, environ=environ),
+        "mode": mode,
     }
 
 
@@ -369,12 +381,18 @@ def main():
     gain = validate_sdr_setting(os.environ.get("SDR_GAIN", gain), "SDR_GAIN", gain,
                                 minimum=0, maximum=100)
     calibration = calibration_config()
+    sdr_mode = calibration["mode"]
     stations = calibration["stations"]
     periodic_interval = calibration["interval"]
     startup_calibration = calibration["on_start"]
     target_startup_calibration = calibration["target_on_start"]
     scheduler = None
     periodic_enabled = bool(stations and periodic_interval > 0 and CalibrationScheduler)
+    if sdr_mode == "high_power" and (startup_calibration or periodic_enabled or target_startup_calibration):
+        logger.warning("High-power shared-IQ mode disables rtl_power calibration; retaining last-known-good values")
+        startup_calibration = False
+        periodic_enabled = False
+        target_startup_calibration = False
     if stations and (periodic_enabled or startup_calibration) and CalibrationScheduler:
         scheduler = CalibrationScheduler(
             periodic_interval,
@@ -393,6 +411,7 @@ def main():
     decoder_failures = 0
     decoder_retry_at = 0
     connection = channel = process = None
+    high_power_active = sdr_mode == "high_power"
 
     def stop(_signum, _frame):
         logger.info("Shutdown requested")
@@ -469,7 +488,8 @@ def main():
                     try:
                         if decoder_lock:
                             decoder_lock.acquire(timeout=0)
-                        process = start_sdr(frequency, ppm=ppm, gain=gain)
+                        process = start_sdr(frequency, ppm=ppm, gain=gain,
+                                            mode="high_power" if high_power_active else "legacy")
                         last_decoder_activity = now
                     except DeviceBusyError:
                         decoder_failures += 1
@@ -501,6 +521,26 @@ def main():
                         decoder_retry_at = time.monotonic() + min(30, 2 ** min(decoder_failures, 5))
                         continue
                     if line:
+                        if line.startswith("HIGH_POWER_FALLBACK"):
+                            logger.warning("%s; falling back to legacy SDR pipeline", line)
+                            terminate_process_group(process)
+                            process = None
+                            high_power_active = False
+                            if decoder_lock:
+                                decoder_lock.release()
+                            try:
+                                decoder_lock.acquire(timeout=0) if decoder_lock else None
+                                process = start_sdr(frequency, ppm=ppm, gain=gain, mode="legacy")
+                            except Exception as exc:
+                                if decoder_lock:
+                                    decoder_lock.release()
+                                logger.warning("Legacy SDR fallback could not start: %s", safe_error(exc))
+                            continue
+                        if line.startswith("SDR_DIAGNOSTIC") or line.startswith("{"):
+                            # Diagnostics are intentionally not treated as pager
+                            # text and therefore cannot create false pages.
+                            logger.info("SDR %s", line)
+                            continue
                         spool.enqueue(message(client_id, line))
                         drain_spool(spool, connection, channel)
                     # A pipeline can emit its final line while the shell
