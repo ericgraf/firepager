@@ -54,6 +54,8 @@ gain. Configure these variables in the client container:
   the OS lock between clients and calibration commands. `SDR_LOCK_PATH` can
   override the lock file; otherwise a hash of the identity (or spool path) is
   stored under `/tmp`.
+* `SDR_USB_INDEX` — optional `rtl_fm -d` device index, so several dongles in
+  one host can each be pinned to a different RTL-SDR (legacy mode).
 
 Calibration interval and jitter must be non-negative numbers, and
 `SDR_CALIBRATE_MIN_STATIONS` must be a positive integer. Invalid calibration
