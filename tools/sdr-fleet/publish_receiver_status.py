@@ -67,13 +67,15 @@ def main():
                 "last_calibration_utc": receiver.get("last_calibration_utc"),
                 "observed_at": observed,
             }
-            if not channel.basic_publish(
+            # In pika 1.x, confirm-mode basic_publish returns None on ACK and
+            # raises NackError/UnroutableError on failure; do not treat None as
+            # a negative confirmation.
+            channel.basic_publish(
                 exchange="", routing_key="receiver_status",
                 body=json.dumps(snapshot, separators=(",", ":")),
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
                 mandatory=True,
-            ):
-                raise RuntimeError("broker did not confirm receiver snapshot")
+            )
     finally:
         connection.close()
 
