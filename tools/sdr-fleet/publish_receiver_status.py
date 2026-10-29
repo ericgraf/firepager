@@ -50,6 +50,12 @@ def main():
             snapshot = {
                 "receiver_id": receiver_id,
                 "host": config.get("host", ""),
+                "device_identifier": config.get("device_identifier", ""),
+                "channel_name": config.get("channel_name", ""),
+                "description": config.get("description", ""),
+                "nominal_frequency_hz": config.get("nominal_frequency_hz"),
+                "configured_gain_db": config.get("gain_db"),
+                "configured_ppm": config.get("ppm"),
                 "status": "error" if status == "error" else "detector" if is_active else status,
                 "role": "detector" if is_active else "legacy",
                 "frequency_hz": receiver.get("current_frequency_hz", config.get("tuner_frequency_hz")),

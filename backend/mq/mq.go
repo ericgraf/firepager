@@ -161,7 +161,8 @@ func runReceiverStatusConsumer() {
 }
 
 func validReceiverStatus(s *models.ReceiverStatus) bool {
-	if s.ReceiverID == "" || len(s.ReceiverID) > 100 || len(s.Host) > 255 || s.ObservedAt.IsZero() ||
+	if s.ReceiverID == "" || len(s.ReceiverID) > 100 || len(s.Host) > 255 ||
+		len(s.DeviceIdentifier) > 255 || len(s.ChannelName) > 255 || len(s.Description) > 2000 || s.ObservedAt.IsZero() ||
 		s.DecodedMessagesCount < 0 || s.CalibrationsAcceptedCount < 0 {
 		return false
 	}

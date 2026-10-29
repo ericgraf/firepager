@@ -77,6 +77,12 @@ func createSchema() {
 	CREATE TABLE IF NOT EXISTS receiver_status (
 		receiver_id VARCHAR(100) PRIMARY KEY,
 		host VARCHAR(255) NOT NULL DEFAULT '',
+		device_identifier VARCHAR(255) NOT NULL DEFAULT '',
+		channel_name VARCHAR(255) NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		nominal_frequency_hz DOUBLE PRECISION,
+		configured_gain_db DOUBLE PRECISION,
+		configured_ppm INTEGER,
 		status VARCHAR(40) NOT NULL DEFAULT 'unknown',
 		role VARCHAR(40) NOT NULL DEFAULT 'unknown',
 		frequency_hz DOUBLE PRECISION,
@@ -89,6 +95,12 @@ func createSchema() {
 		observed_at TIMESTAMPTZ NOT NULL,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
+	ALTER TABLE receiver_status ADD COLUMN IF NOT EXISTS device_identifier VARCHAR(255) NOT NULL DEFAULT '';
+	ALTER TABLE receiver_status ADD COLUMN IF NOT EXISTS channel_name VARCHAR(255) NOT NULL DEFAULT '';
+	ALTER TABLE receiver_status ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+	ALTER TABLE receiver_status ADD COLUMN IF NOT EXISTS nominal_frequency_hz DOUBLE PRECISION;
+	ALTER TABLE receiver_status ADD COLUMN IF NOT EXISTS configured_gain_db DOUBLE PRECISION;
+	ALTER TABLE receiver_status ADD COLUMN IF NOT EXISTS configured_ppm INTEGER;
 	CREATE TABLE IF NOT EXISTS users (
 		id SERIAL PRIMARY KEY,
 		email VARCHAR(255) UNIQUE NOT NULL,
