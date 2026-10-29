@@ -7,6 +7,12 @@ import "time"
 type ReceiverStatus struct {
 	ReceiverID                string     `json:"receiver_id"`
 	Host                      string     `json:"host"`
+	DeviceIdentifier          string     `json:"device_identifier"`
+	ChannelName               string     `json:"channel_name"`
+	Description               string     `json:"description"`
+	NominalFrequencyHz        *float64   `json:"nominal_frequency_hz"`
+	ConfiguredGainDB          *float64   `json:"configured_gain_db"`
+	ConfiguredPPM             *int       `json:"configured_ppm"`
 	Status                    string     `json:"status"`
 	Role                      string     `json:"role"`
 	FrequencyHz               *float64   `json:"frequency_hz"`

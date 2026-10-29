@@ -87,6 +87,12 @@ interface MetricsData {
 interface ReceiverStatus {
   receiver_id: string;
   host: string;
+  device_identifier: string;
+  channel_name: string;
+  description: string;
+  nominal_frequency_hz: number | null;
+  configured_gain_db: number | null;
+  configured_ppm: number | null;
   status: string;
   role: string;
   frequency_hz: number | null;
@@ -335,23 +341,26 @@ export function AdminDashboard() {
         <div className="table-container">
           <table>
             <thead><tr>
-              <th>Receiver</th><th>Host</th><th>Role</th><th>Status</th>
-              <th>Frequency</th><th>Gain / PPM</th><th>Last report</th>
+              <th>Receiver / Channel</th><th>Host / Device</th><th>Role</th><th>Status</th>
+              <th>Nominal / Current Frequency</th><th>Configured Gain / PPM</th><th>Description</th><th>Last report</th>
             </tr></thead>
             <tbody>
               {receivers.length ? receivers.map((receiver) => (
                 <tr key={receiver.receiver_id}>
-                  <td><strong>{receiver.receiver_id}</strong></td>
-                  <td>{receiver.host || '—'}</td>
+                  <td><strong>{receiver.receiver_id}</strong><br />{receiver.channel_name || '—'}</td>
+                  <td>{receiver.host || '—'}<br /><span className="small-text">{receiver.device_identifier || '—'}</span></td>
                   <td>{receiver.role}</td>
                   <td><span className={`badge receiver-status-${receiver.status}`}>
                     {receiver.status === 'stale' ? 'stale' : receiver.active_detector ? 'detector (active)' : receiver.status}
                   </span></td>
-                  <td>{receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</td>
-                  <td>{receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</td>
+                  <td>{receiver.nominal_frequency_hz == null ? '—' : `${(receiver.nominal_frequency_hz / 1e6).toFixed(6)} MHz`}<br />
+                    <span className="small-text">Now: {receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</span></td>
+                  <td>Config: {receiver.configured_gain_db == null ? '—' : `${receiver.configured_gain_db} dB`} / {receiver.configured_ppm == null ? '—' : `${receiver.configured_ppm} ppm`}<br />
+                    <span className="small-text">Now: {receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</span></td>
+                  <td>{receiver.description || '—'}</td>
                   <td>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</td>
                 </tr>
-              )) : <tr><td colSpan={7} className="empty-table">No receiver reports received yet.</td></tr>}
+              )) : <tr><td colSpan={8} className="empty-table">No receiver reports received yet.</td></tr>}
             </tbody>
           </table>
         </div>
