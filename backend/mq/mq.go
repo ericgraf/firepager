@@ -100,6 +100,87 @@ func StartConsumer() {
 	}
 }
 
+// StartReceiverStatusConsumer consumes operational snapshots on their own
+// durable queue; pager_messages remains exclusively for decoded pages.
+func StartReceiverStatusConsumer() {
+	for {
+		runReceiverStatusConsumer()
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func runReceiverStatusConsumer() {
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+	if rabbitURL == "" {
+		rabbitURL = "amqp://guest:guest@firepager-rmq:5672/"
+	}
+	conn, err := amqp.Dial(rabbitURL)
+	if err != nil {
+		log.Printf("Receiver status broker connection failed: %v", err)
+		return
+	}
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Printf("Receiver status channel failed: %v", err)
+		return
+	}
+	defer ch.Close()
+	q, err := ch.QueueDeclare("receiver_status", true, false, false, false, nil)
+	if err != nil {
+		log.Printf("Receiver status queue declaration failed: %v", err)
+		return
+	}
+	if err := ch.Qos(20, 0, false); err != nil {
+		log.Printf("Receiver status QoS setup failed: %v", err)
+		return
+	}
+	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
+	if err != nil {
+		log.Printf("Receiver status consumer registration failed: %v", err)
+		return
+	}
+	log.Printf("Consuming receiver snapshots from %q", q.Name)
+	for d := range msgs {
+		if len(d.Body) > 32*1024 {
+			d.Nack(false, false)
+			continue
+		}
+		var status models.ReceiverStatus
+		if err := json.Unmarshal(d.Body, &status); err != nil || !validReceiverStatus(&status) {
+			d.Nack(false, false)
+			continue
+		}
+		if err := db.SaveReceiverStatus(&status); err != nil {
+			log.Printf("Saving receiver snapshot failed: %v", err)
+			d.Nack(false, true)
+			continue
+		}
+		d.Ack(false)
+	}
+}
+
+func validReceiverStatus(s *models.ReceiverStatus) bool {
+	if s.ReceiverID == "" || len(s.ReceiverID) > 100 || len(s.Host) > 255 || s.ObservedAt.IsZero() ||
+		s.DecodedMessagesCount < 0 || s.CalibrationsAcceptedCount < 0 {
+		return false
+	}
+	if time.Since(s.ObservedAt) > 24*time.Hour || s.ObservedAt.After(time.Now().Add(5*time.Minute)) {
+		return false
+	}
+	switch s.Status {
+	case "idle", "detector", "decoder", "error", "unknown", "stale":
+	default:
+		return false
+	}
+	switch s.Role {
+	case "detector", "legacy", "scope", "none", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
 func geocodeAndStoreMessage(msg *models.Message) error {
 	latitude, longitude, err := geocodeMessage(msg)
 	if err != nil {

@@ -60,6 +60,7 @@ func SetupRouter() *gin.Engine {
 			admin.Use(AdminMiddleware())
 			{
 				admin.GET("/users", getUsers) // Existing but let's make it admin-only if needed, or keep both
+				admin.GET("/receivers", getReceiverStatuses)
 				admin.GET("/invites", GetInvitesHandler)
 				admin.POST("/invites", CreateInviteHandler)
 				admin.DELETE("/messages/:id", deleteMessage)
@@ -113,6 +114,21 @@ func getConfigs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, configs)
+}
+
+func getReceiverStatuses(c *gin.Context) {
+	statuses, err := db.GetReceiverStatuses()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to load receiver status"})
+		return
+	}
+	cutoff := time.Now().UTC().Add(-90 * time.Second)
+	for i := range statuses {
+		if statuses[i].ObservedAt.Before(cutoff) {
+			statuses[i].Status = "stale"
+		}
+	}
+	c.JSON(http.StatusOK, statuses)
 }
 
 func updateConfigs(c *gin.Context) {

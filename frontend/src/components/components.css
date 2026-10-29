@@ -1101,6 +1101,11 @@ button:hover {
 .subscription-actions { display: flex; justify-content: flex-end; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
 .subscription-actions button:disabled, .verification-controls button:disabled { cursor: not-allowed; opacity: .55; }
 .subscription-actions .small-text { margin-right: auto; align-self: center; }
+.receiver-overview .card-header { align-items: center; }
+.receiver-overview .card-header > div > p { margin: 4px 0 0; }
+.receiver-status-detector { color: #075985; background: #e0f2fe; }
+.receiver-status-idle { color: #166534; background: #dcfce7; }
+.receiver-status-error, .receiver-status-stale { color: #991b1b; background: #fee2e2; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 button:focus-visible, input:focus-visible, label:focus-within { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }

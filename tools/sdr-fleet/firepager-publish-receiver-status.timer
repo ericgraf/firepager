@@ -1,0 +1,11 @@
+[Unit]
+Description=Publish FirePager receiver state snapshots
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=20s
+AccuracySec=3s
+Unit=firepager-publish-receiver-status.service
+
+[Install]
+WantedBy=timers.target
