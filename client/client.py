@@ -190,7 +190,13 @@ def start_sdr(frequency, ppm=None, gain=None, mode=None):
     else:
         command = (
         f"rtl_fm -f {shlex.quote(str(frequency))} -s {shlex.quote(sample_rate)} "
-        f"-p {shlex.quote(ppm)} -g {shlex.quote(gain)} | "
+        f"-p {shlex.quote(ppm)} -g {shlex.quote(gain)}"
+        )
+        usb_index = (os.environ.get("SDR_USB_INDEX") or "").strip()
+        if usb_index and usb_index.isdigit():
+            command += f" -d {usb_index}"
+        command += (
+        " | "
         "multimon-ng -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -f alpha -t raw /dev/stdin"
         )
     logger.info("Starting SDR decoder")

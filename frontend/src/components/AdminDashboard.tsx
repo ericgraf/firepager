@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { BarChart } from './BarChart';
 import './components.css';
@@ -84,10 +84,27 @@ interface MetricsData {
   by_station: Stat[];
 }
 
+interface ReceiverStatus {
+  receiver_id: string;
+  host: string;
+  status: string;
+  role: string;
+  frequency_hz: number | null;
+  gain_db: number | null;
+  ppm: number | null;
+  active_detector: boolean;
+  decoded_messages_count: number;
+  calibrations_accepted_count: number;
+  last_calibration_utc: string | null;
+  observed_at: string;
+}
+
 export function AdminDashboard() {
   const [users, setUsers] = useState<User[]>([]);
   const [configs, setConfigs] = useState<Config[]>([]);
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
+  const [receivers, setReceivers] = useState<ReceiverStatus[]>([]);
+  const [receiverError, setReceiverError] = useState('');
   const [draftConfigs, setDraftConfigs] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
@@ -95,7 +112,7 @@ export function AdminDashboard() {
   const [error, setError] = useState('');
   const { token } = useAuth();
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -125,12 +142,29 @@ export function AdminDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
+
+  const fetchReceivers = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await fetch('/api/admin/receivers', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('Unable to load receiver status');
+      setReceivers(await response.json());
+      setReceiverError('');
+    } catch (err: unknown) {
+      setReceiverError(err instanceof Error ? err.message : String(err));
+    }
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
     fetchData();
-  }, [token]);
+    fetchReceivers();
+    const timer = window.setInterval(fetchReceivers, 15000);
+    return () => window.clearInterval(timer);
+  }, [token, fetchData, fetchReceivers]);
 
   const handleRoleChange = async (userId: number, newRole: string) => {
     try {
@@ -286,6 +320,40 @@ export function AdminDashboard() {
           <h3>Traffic Sources</h3>
           <p className="metric-value">{metrics?.by_client?.length ?? 0}</p>
           <p className="small-text">Nodes actively reporting</p>
+        </div>
+      </section>
+
+      <section className="admin-section card receiver-overview">
+        <div className="card-header">
+          <div>
+            <h2>Receiver Fleet</h2>
+            <p className="small-text">Broker-reported receiver state; refreshes every 15 seconds.</p>
+          </div>
+          <button type="button" onClick={fetchReceivers}>Refresh receivers</button>
+        </div>
+        {receiverError && <div className="error">{receiverError}</div>}
+        <div className="table-container">
+          <table>
+            <thead><tr>
+              <th>Receiver</th><th>Host</th><th>Role</th><th>Status</th>
+              <th>Frequency</th><th>Gain / PPM</th><th>Last report</th>
+            </tr></thead>
+            <tbody>
+              {receivers.length ? receivers.map((receiver) => (
+                <tr key={receiver.receiver_id}>
+                  <td><strong>{receiver.receiver_id}</strong></td>
+                  <td>{receiver.host || '—'}</td>
+                  <td>{receiver.role}</td>
+                  <td><span className={`badge receiver-status-${receiver.status}`}>
+                    {receiver.status === 'stale' ? 'stale' : receiver.active_detector ? 'detector (active)' : receiver.status}
+                  </span></td>
+                  <td>{receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</td>
+                  <td>{receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</td>
+                  <td>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</td>
+                </tr>
+              )) : <tr><td colSpan={7} className="empty-table">No receiver reports received yet.</td></tr>}
+            </tbody>
+          </table>
         </div>
       </section>
 

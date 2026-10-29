@@ -34,6 +34,22 @@ func TestAdminInviteEndpointRequiresAdminRole(t *testing.T) {
 	}
 }
 
+func TestReceiverOverviewRequiresAdminRole(t *testing.T) {
+	r := SetupRouter()
+	user := testUserForInviteAuth()
+	token, err := generateToken(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/receivers", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	r.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("expected non-admin receiver overview to be rejected, got %d", res.Code)
+	}
+}
+
 func testUserForInviteAuth() *models.User {
 	return &models.User{ID: 42, Email: "user@example.com", Role: "user"}
 }

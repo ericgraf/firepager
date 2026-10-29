@@ -4,9 +4,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/firepager/backend/models"
 )
+
+func TestReceiverStatusValidation(t *testing.T) {
+	valid := models.ReceiverStatus{
+		ReceiverID: "host-sdr-0", Host: "localhost", Status: "idle", Role: "legacy",
+		ObservedAt: time.Now().UTC(),
+	}
+	if !validReceiverStatus(&valid) {
+		t.Fatal("expected valid receiver snapshot to pass")
+	}
+	valid.ReceiverID = ""
+	if validReceiverStatus(&valid) {
+		t.Fatal("expected snapshot without receiver_id to fail")
+	}
+	valid.ReceiverID = "host-sdr-0"
+	valid.ObservedAt = time.Now().Add(-48 * time.Hour)
+	if validReceiverStatus(&valid) {
+		t.Fatal("expected stale snapshot to fail ingestion validation")
+	}
+}
 
 func TestMessageDecoding(t *testing.T) {
 	samples := []struct {

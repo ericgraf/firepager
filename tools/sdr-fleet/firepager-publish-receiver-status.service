@@ -1,0 +1,11 @@
+[Unit]
+Description=Publish FirePager receiver state to RabbitMQ
+After=network-online.target firepager-controller.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/egraf/scripts/firepager-v2
+ExecStart=/usr/bin/python3 tools/sdr-fleet/publish_receiver_status.py %h/.local/share/firepager/rotation/state.json %h/.config/firepager/sdr-inventory.json
+TimeoutStartSec=15
+StandardOutput=journal
+StandardError=journal

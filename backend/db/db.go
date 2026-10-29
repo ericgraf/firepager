@@ -74,6 +74,21 @@ func createSchema() {
 		client_id VARCHAR(100),
 		station VARCHAR(50)
 	);
+	CREATE TABLE IF NOT EXISTS receiver_status (
+		receiver_id VARCHAR(100) PRIMARY KEY,
+		host VARCHAR(255) NOT NULL DEFAULT '',
+		status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+		role VARCHAR(40) NOT NULL DEFAULT 'unknown',
+		frequency_hz DOUBLE PRECISION,
+		gain_db DOUBLE PRECISION,
+		ppm INTEGER,
+		active_detector BOOLEAN NOT NULL DEFAULT FALSE,
+		decoded_messages_count BIGINT NOT NULL DEFAULT 0,
+		calibrations_accepted_count BIGINT NOT NULL DEFAULT 0,
+		last_calibration_utc TIMESTAMPTZ,
+		observed_at TIMESTAMPTZ NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
 	CREATE TABLE IF NOT EXISTS users (
 		id SERIAL PRIMARY KEY,
 		email VARCHAR(255) UNIQUE NOT NULL,

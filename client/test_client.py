@@ -2,6 +2,7 @@ import os
 import signal
 import tempfile
 import unittest
+from unittest import mock
 
 import client
 
@@ -119,6 +120,23 @@ class HardeningTests(unittest.TestCase):
             client.subprocess.Popen = old
         self.assertIn("-p -2.5", commands[0])
         self.assertIn("-g 38", commands[0])
+
+    def test_sdr_command_uses_explicit_usb_device_index(self):
+        old = client.subprocess.Popen
+        commands = []
+
+        class Process:
+            pass
+
+        client.subprocess.Popen = lambda command, **kwargs: (commands.append(command) or Process())
+        try:
+            with mock.patch.dict(os.environ, {"SDR_USB_INDEX": "2"}):
+                client.start_sdr("155603323", ppm=-2.5, gain="38")
+            client.start_sdr("155603323", ppm=-2.5, gain="38")
+        finally:
+            client.subprocess.Popen = old
+        self.assertIn("-d 2", commands[0])
+        self.assertNotIn(" -d ", commands[1])
 
     def test_credentials_are_redacted(self):
         self.assertNotIn("secret", client.redact_url("amqp://pager:secret@broker:5672/"))
