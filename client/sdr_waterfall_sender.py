@@ -162,10 +162,11 @@ def run(args: argparse.Namespace) -> int:
                     text=True, encoding="utf-8", errors="replace",
                     # A full rtl_power sweep can take much longer than one
                     # integration period: each tuned slice is integrated in
-                    # turn. Allow one upload interval plus a one-minute margin,
+                    # turn. Allow up to two upload intervals because rtl_power
+                    # may spend additional time sweeping its tuned slices,
                     # otherwise a 120 kHz/5 s capture is killed at 30 s and
                     # never produces a waterfall snapshot.
-                    timeout=max(30, args.interval_seconds + 60), check=False,
+                    timeout=max(30, args.interval_seconds * 2), check=False,
                 )
             except subprocess.TimeoutExpired:
                 LOG.warning("rtl_power scan timed out; will retry next interval")
