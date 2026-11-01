@@ -19,6 +19,12 @@ class WaterfallSenderTests(unittest.TestCase):
         row = "2026-10-31, 18:00:05, 155538000, 155658000, 250, 1, -80, NaN"
         self.assertIsNone(sender.parse_rtl_power_row(row))
 
+    def test_truncates_rtl_power_rounding_edge_bin(self):
+        bins = ",".join(["-80.0"] * 513)
+        row = "2026-10-31, 18:00:05, 155538000, 155658000, 234.38, 1, " + bins
+        parsed = sender.parse_rtl_power_row(row)
+        self.assertEqual(len(parsed["power_db"]), sender.MAX_BINS)
+
     def test_snapshot_has_consistent_frequency_grid_and_bounded_rows(self):
         rows = [{"captured_at": "2026-10-31T18:00:%02dZ" % i,
                  "start_hz": 155538000.0, "step_hz": 250.0,

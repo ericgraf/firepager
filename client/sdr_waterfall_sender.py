@@ -52,9 +52,12 @@ def parse_rtl_power_row(line: str) -> Optional[Dict[str, Any]]:
     except (ValueError, IndexError, StopIteration):
         return None
     if (not math.isfinite(start_hz) or not math.isfinite(step_hz) or step_hz <= 0
-            or not power_db or len(power_db) > MAX_BINS
+            or not power_db
             or any(not math.isfinite(value) for value in power_db)):
         return None
+    # rtl_power may emit one extra edge bin when it rounds the requested
+    # maximum bin size to its FFT grid. Keep the leftmost bounded spectrum.
+    power_db = power_db[:MAX_BINS]
     return {
         "captured_at": stamp.isoformat().replace("+00:00", "Z"),
         "start_hz": start_hz,
