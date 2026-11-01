@@ -222,7 +222,7 @@ export function AdminDashboard() {
   const fetchWaterfalls = useCallback(async () => {
     if (!token) return;
     try {
-      const response = await fetch('/api/admin/receivers/remote-pi-sdr/waterfalls?limit=12', {
+      const response = await fetch('/api/admin/receivers/host-sdr-0/waterfalls?limit=12', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!response.ok) throw new Error('Unable to load receiver waterfalls');
@@ -444,8 +444,8 @@ export function AdminDashboard() {
       <section className="admin-section card receiver-waterfall">
         <div className="card-header">
           <div>
-            <h2>Pi Receiver Waterfall</h2>
-            <p className="small-text">Spectrum-only Pi SDR · snapshots every 5 minutes · refreshed automatically</p>
+            <h2>Host SDR 0 Waterfall</h2>
+            <p className="small-text">Spectrum-only Host SDR 0 · snapshots every 5 minutes · refreshed automatically</p>
           </div>
           <button type="button" onClick={fetchWaterfalls}>Refresh waterfall</button>
         </div>
