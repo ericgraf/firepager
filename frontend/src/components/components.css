@@ -1123,3 +1123,378 @@ button:focus-visible, input:focus-visible, label:focus-within { outline: 3px sol
   .subscription-actions .small-text { margin-right: 0; }
   .subscription-actions button { width: 100%; }
 }
+
+/* ---------------- Mobile (phone) layout ---------------- */
+
+.auth-card {
+  max-width: 420px;
+  margin: 48px auto;
+}
+
+.notification-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-top: 10px;
+}
+
+/* Operator console: call cards replace the 7-column table on phones. */
+.call-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.call-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  background: linear-gradient(140deg, var(--bg), var(--code-bg));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.call-card:active {
+  border-color: var(--accent);
+}
+
+.call-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.call-card-head .incident-text { font-size: 15px; }
+.call-card-head .time-text { margin-left: auto; }
+
+.call-card-loc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-h);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.call-card-loc small { color: var(--text); font-size: 12px; }
+
+.call-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Admin: receiver fleet and users become cards on phones. */
+.receiver-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.receiver-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--bg);
+}
+
+.receiver-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.receiver-card-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.receiver-card-detail > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.receiver-card-detail dt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.receiver-card-detail dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+.user-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--bg);
+}
+
+.user-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.user-card-email {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.user-card-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  .auth-card {
+    max-width: 100%;
+    margin: 12px auto;
+    width: 100%;
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .card h2 {
+    font-size: 18px;
+  }
+
+  .empty-state {
+    padding: 24px 0;
+    font-size: 14px;
+  }
+
+  .operator-hero h2 {
+    font-size: 26px;
+  }
+
+  .operator-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .operator-kpis article {
+    padding: 12px;
+  }
+
+  .operator-kpis strong {
+    font-size: 22px;
+  }
+
+  .calls-panel {
+    padding: 16px;
+  }
+
+  .call-filters {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .call-filters select,
+  .call-filters input {
+    height: 48px;
+  }
+
+  .call-filters .secondary-button {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .operator-alert {
+    flex-wrap: wrap;
+  }
+
+  .operator-alert button {
+    width: 100%;
+  }
+
+  .pagination {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .pagination button {
+    flex: 1;
+    min-height: 48px;
+  }
+
+  .detail-drawer {
+    width: 100vw;
+    border-left: 0;
+  }
+
+  .drawer-header,
+  .drawer-footer {
+    padding: 16px 14px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .drawer-body {
+    padding: 16px 14px;
+  }
+
+  .admin-hero h2 {
+    font-size: 22px;
+  }
+
+  .admin-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .admin-kpi {
+    padding: 14px;
+  }
+
+  .admin-kpi .metric-value {
+    font-size: 24px;
+  }
+
+  .admin-toolbar {
+    justify-content: stretch;
+  }
+
+  .admin-search {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .receiver-waterfall-plot canvas {
+    min-width: 512px;
+    height: 180px;
+  }
+
+  .receiver-waterfall-axis {
+    min-width: 512px;
+  }
+
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .config-controls input {
+    min-height: 46px;
+  }
+
+  .role-select {
+    width: 100%;
+    min-height: 46px;
+  }
+
+  .unit-chip {
+    min-height: 44px;
+  }
+
+  .unit-pill {
+    min-height: 44px;
+  }
+
+  .tag-add-btn {
+    min-height: 44px;
+  }
+
+  .close-btn {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 8px;
+    font-size: 24px;
+    align-self: flex-start;
+  }
+
+  .catalog-option {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .invite-item {
+    padding: 10px 0;
+  }
+
+  .invite-actions {
+    width: 100%;
+  }
+
+  .invite-actions button {
+    flex: 1;
+  }
+
+  .section-heading {
+    flex-wrap: wrap;
+  }
+
+  .bar-row {
+    grid-template-columns: minmax(56px, 90px) 1fr 30px;
+  }
+
+  /* Incident modal becomes a bottom sheet on phones. */
+  .modal-overlay {
+    align-items: flex-end;
+  }
+
+  .modal-content {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 14px 14px 0 0;
+    max-height: 92svh;
+    overflow-y: auto;
+  }
+}

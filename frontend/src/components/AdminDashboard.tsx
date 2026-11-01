@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { BarChart } from './BarChart';
 import './components.css';
 
@@ -159,6 +160,7 @@ function WaterfallCanvas({ snapshot }: { snapshot: WaterfallSnapshot }) {
 }
 
 export function AdminDashboard() {
+  const isMobile = useIsMobile();
   const [users, setUsers] = useState<User[]>([]);
   const [configs, setConfigs] = useState<Config[]>([]);
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
@@ -413,32 +415,53 @@ export function AdminDashboard() {
           <button type="button" onClick={fetchReceivers}>Refresh receivers</button>
         </div>
         {receiverError && <div className="error">{receiverError}</div>}
-        <div className="table-container">
-          <table>
-            <thead><tr>
-              <th>Receiver / Channel</th><th>Host / Device</th><th>Role</th><th>Status</th>
-              <th>Nominal / Current Frequency</th><th>Configured Gain / PPM</th><th>Description</th><th>Last report</th>
-            </tr></thead>
-            <tbody>
-              {receivers.length ? receivers.map((receiver) => (
-                <tr key={receiver.receiver_id}>
-                  <td><strong>{receiver.receiver_id}</strong><br />{receiver.channel_name || '—'}</td>
-                  <td>{receiver.host || '—'}<br /><span className="small-text">{receiver.device_identifier || '—'}</span></td>
-                  <td>{receiver.role}</td>
-                  <td><span className={`badge receiver-status-${receiver.status}`}>
+        {isMobile ? (
+          <ul className="receiver-cards">
+            {receivers.length ? receivers.map((receiver) => (
+              <li key={receiver.receiver_id} className="receiver-card">
+                <div className="receiver-card-head">
+                  <strong>{receiver.receiver_id}</strong>
+                  <span className={`badge receiver-status-${receiver.status}`}>
                     {receiver.status === 'stale' ? 'stale' : receiver.active_detector ? 'detector (active)' : receiver.status}
-                  </span></td>
-                  <td>{receiver.nominal_frequency_hz == null ? '—' : `${(receiver.nominal_frequency_hz / 1e6).toFixed(6)} MHz`}<br />
-                    <span className="small-text">Now: {receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</span></td>
-                  <td>Config: {receiver.configured_gain_db == null ? '—' : `${receiver.configured_gain_db} dB`} / {receiver.configured_ppm == null ? '—' : `${receiver.configured_ppm} ppm`}<br />
-                    <span className="small-text">Now: {receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</span></td>
-                  <td>{receiver.description || '—'}</td>
-                  <td>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</td>
-                </tr>
-              )) : <tr><td colSpan={8} className="empty-table">No receiver reports received yet.</td></tr>}
-            </tbody>
-          </table>
-        </div>
+                  </span>
+                </div>
+                <dl className="receiver-card-detail">
+                  <div><dt>Role</dt><dd>{receiver.role || '—'}</dd></div>
+                  <div><dt>Freq now</dt><dd>{receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</dd></div>
+                  <div><dt>Gain / PPM</dt><dd>{receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</dd></div>
+                  <div><dt>Reported</dt><dd>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</dd></div>
+                </dl>
+              </li>
+            )) : <li className="empty-state">No receiver reports received yet.</li>}
+          </ul>
+        ) : (
+          <div className="table-container">
+            <table>
+              <thead><tr>
+                <th>Receiver / Channel</th><th>Host / Device</th><th>Role</th><th>Status</th>
+                <th>Nominal / Current Frequency</th><th>Configured Gain / PPM</th><th>Description</th><th>Last report</th>
+              </tr></thead>
+              <tbody>
+                {receivers.length ? receivers.map((receiver) => (
+                  <tr key={receiver.receiver_id}>
+                    <td><strong>{receiver.receiver_id}</strong><br />{receiver.channel_name || '—'}</td>
+                    <td>{receiver.host || '—'}<br /><span className="small-text">{receiver.device_identifier || '—'}</span></td>
+                    <td>{receiver.role}</td>
+                    <td><span className={`badge receiver-status-${receiver.status}`}>
+                      {receiver.status === 'stale' ? 'stale' : receiver.active_detector ? 'detector (active)' : receiver.status}
+                    </span></td>
+                    <td>{receiver.nominal_frequency_hz == null ? '—' : `${(receiver.nominal_frequency_hz / 1e6).toFixed(6)} MHz`}<br />
+                      <span className="small-text">Now: {receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</span></td>
+                    <td>Config: {receiver.configured_gain_db == null ? '—' : `${receiver.configured_gain_db} dB`} / {receiver.configured_ppm == null ? '—' : `${receiver.configured_ppm} ppm`}<br />
+                      <span className="small-text">Now: {receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</span></td>
+                    <td>{receiver.description || '—'}</td>
+                    <td>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</td>
+                  </tr>
+                )) : <tr><td colSpan={8} className="empty-table">No receiver reports received yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       <section className="admin-section card receiver-waterfall">
@@ -522,47 +545,74 @@ export function AdminDashboard() {
           />
         </div>
 
-        <div className="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Invited By</th>
-                <th>Role</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredUsers.length > 0 ? filteredUsers.map((user) => (
-                <tr key={user.id}>
-                  <td>{user.name}</td>
-                  <td>{user.email}</td>
-                  <td>{user.invited_by_name || 'Self-created / seed'}</td>
-                  <td>
-                    <span className={`badge ${user.role === 'admin' ? 'role-admin' : ''}`}>
-                      {user.role}
-                    </span>
-                  </td>
-                  <td>
-                    <select
-                      value={user.role}
-                      onChange={(event) => handleRoleChange(user.id, event.target.value)}
-                      className="role-select"
-                    >
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  </td>
-                </tr>
-              )) : (
+        {isMobile ? (
+          <ul className="user-cards">
+            {filteredUsers.length > 0 ? filteredUsers.map((user) => (
+              <li key={user.id} className="user-card">
+                <div className="user-card-head">
+                  <strong>{user.name}</strong>
+                  <span className={`badge ${user.role === 'admin' ? 'role-admin' : ''}`}>{user.role}</span>
+                </div>
+                <p className="user-card-email">{user.email}</p>
+                <p className="small-text">{user.invited_by_name || 'Self-created / seed'}</p>
+                <label className="user-card-role">
+                  <span>Role</span>
+                  <select
+                    value={user.role}
+                    onChange={(event) => handleRoleChange(user.id, event.target.value)}
+                    className="role-select"
+                    aria-label={`Role for ${user.name}`}
+                  >
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+              </li>
+            )) : <li className="empty-state">No users match the current filter.</li>}
+          </ul>
+        ) : (
+          <div className="table-container">
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={5} className="empty-table">No users match the current filter.</td>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Invited By</th>
+                  <th>Role</th>
+                  <th>Actions</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {filteredUsers.length > 0 ? filteredUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td>{user.name}</td>
+                    <td>{user.email}</td>
+                    <td>{user.invited_by_name || 'Self-created / seed'}</td>
+                    <td>
+                      <span className={`badge ${user.role === 'admin' ? 'role-admin' : ''}`}>
+                        {user.role}
+                      </span>
+                    </td>
+                    <td>
+                      <select
+                        value={user.role}
+                        onChange={(event) => handleRoleChange(user.id, event.target.value)}
+                        className="role-select"
+                      >
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={5} className="empty-table">No users match the current filter.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       <section className="admin-section card">

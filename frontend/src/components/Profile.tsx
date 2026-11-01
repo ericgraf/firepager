@@ -821,7 +821,7 @@ export function Profile() {
 
           <div style={{ marginTop: '24px' }}>
             <h3>Notification Preferences</h3>
-            <div style={{ display: 'flex', gap: '24px', marginTop: '10px' }}>
+            <div className="notification-options">
               {Object.keys(notifications).map((type) => (
                 <label key={type} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontSize: '15px' }}>
                   <input 
