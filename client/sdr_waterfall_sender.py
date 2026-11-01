@@ -160,7 +160,12 @@ def run(args: argparse.Namespace) -> int:
                 result = subprocess.run(
                     command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, encoding="utf-8", errors="replace",
-                    timeout=max(30, args.integration_seconds * 6), check=False,
+                    # A full rtl_power sweep can take much longer than one
+                    # integration period: each tuned slice is integrated in
+                    # turn. Allow up to one upload interval for the sweep,
+                    # otherwise a 120 kHz/5 s capture is killed at 30 s and
+                    # never produces a waterfall snapshot.
+                    timeout=max(30, args.interval_seconds), check=False,
                 )
             except subprocess.TimeoutExpired:
                 LOG.warning("rtl_power scan timed out; will retry next interval")
