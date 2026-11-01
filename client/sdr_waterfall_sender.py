@@ -115,12 +115,10 @@ def publish_snapshot(snapshot: Dict[str, Any], broker_url: str) -> None:
 
 
 def rtl_power_command(args: argparse.Namespace) -> List[str]:
-    """Construct a fixed-tune, manual-gain spectrum-only command."""
+    """Construct one fixed-tune, manual-gain spectrum scan."""
     return [
-        # rtl_power uses block-buffered stdio when stdout is a pipe. Force line
-        # buffering so measured CSV rows reach this process during each scan.
-        "stdbuf", "-oL", "rtl_power", "-f", args.frequency_range, "-i", str(args.integration_seconds),
-        "-g", str(args.gain), "-p", str(args.ppm), "-d", str(args.device), "-",
+        "rtl_power", "-f", args.frequency_range, "-i", str(args.integration_seconds),
+        "-1", "-g", str(args.gain), "-p", str(args.ppm), "-d", str(args.device), "-",
     ]
 
 
@@ -151,32 +149,36 @@ def run(args: argparse.Namespace) -> int:
     LOG.info("Starting fixed-tune spectrum capture for %s", args.receiver_id)
     LOG.info("Band=%s integration=%ss upload_interval=%ss", args.frequency_range,
              args.integration_seconds, args.interval_seconds)
-    try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True,
-                                   encoding="utf-8", errors="replace", bufsize=1)
-    except OSError as exc:
-        LOG.error("Could not start rtl_power (%s)", type(exc).__name__)
-        if lock:
-            lock.release()
-        return 2
-
     rows: List[Dict[str, Any]] = []
     next_publish = time.monotonic() + args.interval_seconds
     try:
-        assert process.stdout is not None
         while not stopping:
-            line = process.stdout.readline()
-            if line:
-                row = parse_rtl_power_row(line)
-                if row is not None:
-                    if rows and (row["start_hz"], row["step_hz"], len(row["power_db"])) != (
-                            rows[0]["start_hz"], rows[0]["step_hz"], len(rows[0]["power_db"])):
-                        rows.clear()
-                    rows.append(row)
+            try:
+                result = subprocess.run(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace",
+                    timeout=max(30, args.integration_seconds * 6), check=False,
+                )
+            except subprocess.TimeoutExpired:
+                LOG.warning("rtl_power scan timed out; will retry next interval")
+                result = None
+            except OSError as exc:
+                LOG.error("Could not run rtl_power (%s)", type(exc).__name__)
+                return 2
+
+            if result is not None:
+                if result.returncode != 0:
+                    LOG.warning("rtl_power scan failed with status %s", result.returncode)
+                else:
+                    for line in result.stdout.splitlines():
+                        row = parse_rtl_power_row(line)
+                        if row is None:
+                            continue
+                        if rows and (row["start_hz"], row["step_hz"], len(row["power_db"])) != (
+                                rows[0]["start_hz"], rows[0]["step_hz"], len(rows[0]["power_db"])):
+                            rows.clear()
+                        rows.append(row)
                     rows = rows[-MAX_ROWS:]
-            elif process.poll() is not None:
-                LOG.error("rtl_power exited with status %s", process.returncode)
-                return process.returncode or 1
 
             if time.monotonic() >= next_publish:
                 if rows:
@@ -194,16 +196,9 @@ def run(args: argparse.Namespace) -> int:
                 else:
                     LOG.warning("No complete rtl_power rows at snapshot interval")
                 next_publish = time.monotonic() + args.interval_seconds
+            if not stopping:
+                time.sleep(0.1)
     finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        if process.stdout:
-            process.stdout.close()
         if lock:
             lock.release()
     return 0
