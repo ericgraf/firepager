@@ -117,7 +117,9 @@ def publish_snapshot(snapshot: Dict[str, Any], broker_url: str) -> None:
 def rtl_power_command(args: argparse.Namespace) -> List[str]:
     """Construct a fixed-tune, manual-gain spectrum-only command."""
     return [
-        "rtl_power", "-f", args.frequency_range, "-i", str(args.integration_seconds),
+        # rtl_power uses block-buffered stdio when stdout is a pipe. Force line
+        # buffering so measured CSV rows reach this process during each scan.
+        "stdbuf", "-oL", "rtl_power", "-f", args.frequency_range, "-i", str(args.integration_seconds),
         "-g", str(args.gain), "-p", str(args.ppm), "-d", str(args.device), "-",
     ]
 
