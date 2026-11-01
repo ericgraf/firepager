@@ -286,6 +286,17 @@ func createSchema() {
 		policy_version VARCHAR(50) NOT NULL,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+	CREATE TABLE IF NOT EXISTS receiver_waterfalls (
+		id BIGSERIAL PRIMARY KEY,
+		receiver_id VARCHAR(100) NOT NULL,
+		captured_at TIMESTAMPTZ NOT NULL,
+		start_hz DOUBLE PRECISION NOT NULL,
+		step_hz DOUBLE PRECISION NOT NULL,
+		spectrum_rows JSONB NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
+	CREATE INDEX IF NOT EXISTS receiver_waterfalls_receiver_captured_idx ON receiver_waterfalls (receiver_id, captured_at DESC);
+	CREATE INDEX IF NOT EXISTS receiver_waterfalls_captured_at_idx ON receiver_waterfalls (captured_at);
 	-- Query indexes for the high-volume message list and time-window metrics.
 	CREATE INDEX IF NOT EXISTS messages_timestamp_id_idx ON messages (timestamp DESC, id DESC);
 	CREATE INDEX IF NOT EXISTS messages_type_timestamp_idx ON messages (type, timestamp DESC);

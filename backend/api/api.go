@@ -61,6 +61,7 @@ func SetupRouter() *gin.Engine {
 			{
 				admin.GET("/users", getUsers) // Existing but let's make it admin-only if needed, or keep both
 				admin.GET("/receivers", getReceiverStatuses)
+				admin.GET("/receivers/:id/waterfalls", getReceiverWaterfalls)
 				admin.GET("/invites", GetInvitesHandler)
 				admin.POST("/invites", CreateInviteHandler)
 				admin.DELETE("/messages/:id", deleteMessage)
@@ -129,6 +130,29 @@ func getReceiverStatuses(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, statuses)
+}
+
+func getReceiverWaterfalls(c *gin.Context) {
+	receiverID := strings.TrimSpace(c.Param("id"))
+	if receiverID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Receiver ID is required"})
+		return
+	}
+
+	limit := 12
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	waterfalls, err := db.GetReceiverWaterfalls(receiverID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to load receiver waterfalls"})
+		return
+	}
+
+	c.JSON(http.StatusOK, waterfalls)
 }
 
 func updateConfigs(c *gin.Context) {
