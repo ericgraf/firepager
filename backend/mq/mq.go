@@ -76,6 +76,12 @@ func StartConsumer() {
 			d.Nack(false, false) // Don't requeue invalid JSON
 			continue
 		}
+		if !isPagerFrame(msg.RawText) {
+			// The SDR client merges decoder stderr into stdout. Ignore startup
+			// banners and tuner diagnostics; they are not pager traffic.
+			d.Ack(false)
+			continue
+		}
 
 		decodeMessage(&msg)
 

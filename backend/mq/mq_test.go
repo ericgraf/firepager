@@ -178,6 +178,32 @@ func TestMessageDecoding(t *testing.T) {
 	}
 }
 
+func TestPagerFrameFilter(t *testing.T) {
+	valid := []string{
+		"POCSAG512: Address:  930032  Function: 2  Alpha:   SMOKE VISIBLE<EOT><NUL>",
+		"POCSAG1200: Address: 123456 Function: 0 Alpha:",
+		"POCSAG2400: Address: 123456",
+	}
+	for _, raw := range valid {
+		if !isPagerFrame(raw) {
+			t.Errorf("expected valid pager frame to pass: %q", raw)
+		}
+	}
+	startup := []string{
+		"multimon-ng 1.3.1",
+		"Available demodulators: POCSAG512 POCSAG1200 POCSAG2400 FLEX FLEX_NEXT EAS",
+		"Found Rafael Micro R820T tuner",
+		"Tuner gain set to 44.50 dB.",
+		"[R82XX] PLL not locked!",
+		"",
+	}
+	for _, raw := range startup {
+		if isPagerFrame(raw) {
+			t.Errorf("unexpectedly accepted SDR diagnostic as a pager frame: %q", raw)
+		}
+	}
+}
+
 func TestNotificationRetryClassification(t *testing.T) {
 	if retryableNotificationError(fmt.Errorf("email provider request failed (status 503)")) == false {
 		t.Fatal("expected server failures to retry")

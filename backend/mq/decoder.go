@@ -9,19 +9,27 @@ import (
 )
 
 var (
-	pocsagRegex   = regexp.MustCompile(`POCSAG\d+: Address:\s+(\d+)\s+Function: (\d)\s+Alpha:\s+(.*)`)
-	incidentRegex = regexp.MustCompile(`#(\d+)`)
-	vehicleTypes  = []string{"PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "T", "P"}
-	pageIDRegex   = regexp.MustCompile(`ID:([A-Za-z0-9]+)`)
-	timeRegex     = regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}\b`)
-	dispatchRegex = regexp.MustCompile(`\s+(?:Dv|Dt):`)
-	vehicleRegex  = regexp.MustCompile(`(?i)\b(?:PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
-	gridCodeRegex = regexp.MustCompile(`(?i)^([A-Z]{0,2}\d{1,2}[A-Z]?)\s*(.*)$`)
-	dvRegex       = regexp.MustCompile(`(?i)\bDv:\s*([^\s<]+)`)
-	sectionRegex  = regexp.MustCompile(`(?i)\bSec:\s*([^\s<]+)`)
-	gridRegex     = regexp.MustCompile(`(?i)\bGd:\s*([^\s<]+)`)
-	aliasRegex    = regexp.MustCompile(`(?i)\bAlias:\s*(.*)`)
+	pocsagRegex     = regexp.MustCompile(`POCSAG\d+: Address:\s+(\d+)\s+Function: (\d)\s+Alpha:\s+(.*)`)
+	incidentRegex   = regexp.MustCompile(`#(\d+)`)
+	vehicleTypes    = []string{"PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "T", "P"}
+	pageIDRegex     = regexp.MustCompile(`ID:([A-Za-z0-9]+)`)
+	timeRegex       = regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}\b`)
+	dispatchRegex   = regexp.MustCompile(`\s+(?:Dv|Dt):`)
+	vehicleRegex    = regexp.MustCompile(`(?i)\b(?:PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
+	gridCodeRegex   = regexp.MustCompile(`(?i)^([A-Z]{0,2}\d{1,2}[A-Z]?)\s*(.*)$`)
+	dvRegex         = regexp.MustCompile(`(?i)\bDv:\s*([^\s<]+)`)
+	sectionRegex    = regexp.MustCompile(`(?i)\bSec:\s*([^\s<]+)`)
+	gridRegex       = regexp.MustCompile(`(?i)\bGd:\s*([^\s<]+)`)
+	aliasRegex      = regexp.MustCompile(`(?i)\bAlias:\s*(.*)`)
+	pagerFrameRegex = regexp.MustCompile(`(?s)^POCSAG(?:512|1200|2400):\s+Address:\s*\d+(?:\s+Function:\s*\d(?:\s+Alpha:.*)?)?$`)
 )
+
+// isPagerFrame rejects merged rtl_fm/multimon startup output before it can be
+// stored as a message. The client combines pipeline stderr and stdout, so only
+// actual POCSAG address/function frames belong on pager_messages.
+func isPagerFrame(raw string) bool {
+	return pagerFrameRegex.MatchString(strings.TrimSpace(raw))
+}
 
 func decodeMessage(m *models.Message) {
 	line := m.RawText
