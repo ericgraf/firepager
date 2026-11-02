@@ -9,6 +9,7 @@ interface Message {
   timestamp: string;
   source: string;
   text: string;
+  raw_text: string;
   type: string;
   page_id: string;
   call_type: string;
@@ -157,6 +158,12 @@ export function MessageFeed({ selectedVehicles }: MessageFeedProps) {
               <p><strong>Location:</strong> {selectedCall.address} {selectedCall.intersection ? `(${selectedCall.intersection})` : ''}</p>
               <p><strong>Vehicles:</strong> {formatVehicles(selectedCall.vehicles)}</p>
               <p className="small-text">Timestamp: {new Date(selectedCall.timestamp).toLocaleString()}</p>
+              {selectedCall.raw_text && (
+                <details className="raw-page-details">
+                  <summary>Decoded pager message</summary>
+                  <pre className="content-text">{selectedCall.raw_text}</pre>
+                </details>
+              )}
             </div>
           </div>
         </div>
@@ -273,7 +280,15 @@ export function MessageFeed({ selectedVehicles }: MessageFeedProps) {
                     <tr key={msg.id} className={`row-type-${msg.type?.toLowerCase()}`}>
                       <td><span className="time-text">{new Date(msg.timestamp).toLocaleTimeString()}</span></td>
                       <td><span className="badge">{msg.type}</span></td>
-                      <td><div className="content-text">{msg.text}</div></td>
+                      <td>
+                        <div className="content-text">{msg.text}</div>
+                        {msg.raw_text && (
+                          <details className="raw-page-details">
+                            <summary>View decoded page</summary>
+                            <pre className="content-text">{msg.raw_text}</pre>
+                          </details>
+                        )}
+                      </td>
                       <td><small>{msg.source}</small></td>
                       <td><small className="client-text">{msg.client_id || '?'}</small></td>
                     </tr>
