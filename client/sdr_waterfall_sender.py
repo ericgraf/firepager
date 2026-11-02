@@ -183,7 +183,10 @@ def run(args: argparse.Namespace) -> int:
     try:
         try:
             process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                # Keep rtl_power diagnostics in the container log. Hiding
+                # stderr made USB/tuner failures indistinguishable from a
+                # quiet spectrum stream during live capture.
+                command, stdout=subprocess.PIPE, stderr=None,
                 bufsize=0,
             )
         except OSError as exc:
