@@ -472,8 +472,11 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 	}
 
 	args = append(args, limit+1)
-	query := `SELECT id, timestamp, source, text, COALESCE(raw_text, ''), type, page_id, call_type,
-		incident_number, vehicles, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id, station
+	query := `SELECT id, timestamp, COALESCE(source, ''), COALESCE(text, ''), COALESCE(raw_text, ''),
+		COALESCE(type, ''), COALESCE(page_id, ''), COALESCE(call_type, ''), COALESCE(incident_number, ''),
+		COALESCE(vehicles, ARRAY[]::TEXT[]), COALESCE(address, ''), COALESCE(intersection, ''),
+		COALESCE(dv, ''), COALESCE(sec, ''), COALESCE(gd, ''), COALESCE(alias, ''),
+		COALESCE(latitude, 0), COALESCE(longitude, 0), COALESCE(client_id, ''), COALESCE(station, '')
 		FROM messages WHERE ` + strings.Join(conditions, " AND ") +
 		` ORDER BY timestamp DESC, id DESC LIMIT $` + fmt.Sprint(len(args))
 	rows, err := DB.Query(query, args...)
