@@ -1,5 +1,6 @@
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
+import { AddressLink } from './AddressLink';
 import 'leaflet/dist/leaflet.css';
 import './components.css';
 
@@ -82,7 +83,7 @@ export function DashboardCallMap({ calls }: DashboardCallMapProps) {
             <Popup>
               <strong>{call.call_type}</strong><br />
               #{call.incident_number || 'N/A'}<br />
-              {call.address}<br />
+              <AddressLink address={call.address} intersection={call.intersection}>{call.address}</AddressLink><br />
               {call.intersection ? `${call.intersection}` : null}
               {call.station ? <><br />Station {call.station}</> : null}
               {formatVehicles(call.vehicles) ? <><br />{formatVehicles(call.vehicles)}</> : null}

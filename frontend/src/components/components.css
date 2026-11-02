@@ -1,3 +1,16 @@
+.address-map-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.address-map-link:hover,
+.address-map-link:focus-visible {
+  color: var(--accent);
+  text-decoration-style: solid;
+}
+
 .card {
   background: var(--bg);
   border: 1px solid var(--border);
