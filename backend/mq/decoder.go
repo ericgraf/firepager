@@ -17,6 +17,10 @@ var (
 	dispatchRegex = regexp.MustCompile(`\s+(?:Dv|Dt):`)
 	vehicleRegex  = regexp.MustCompile(`(?i)\b(?:PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
 	gridCodeRegex = regexp.MustCompile(`(?i)^([A-Z]{0,2}\d{1,2}[A-Z]?)\s*(.*)$`)
+	dvRegex       = regexp.MustCompile(`(?i)\bDv:\s*([^\s<]+)`)
+	sectionRegex  = regexp.MustCompile(`(?i)\bSec:\s*([^\s<]+)`)
+	gridRegex     = regexp.MustCompile(`(?i)\bGd:\s*([^\s<]+)`)
+	aliasRegex    = regexp.MustCompile(`(?i)\bAlias:\s*(.*)`)
 )
 
 func decodeMessage(m *models.Message) {
@@ -50,6 +54,10 @@ func decodeMessage(m *models.Message) {
 
 	if strings.Contains(cleanLine, "#") && strings.Contains(cleanLine, "Gd:") {
 		m.Type = "CALL"
+		m.DV = matchField(dvRegex, cleanLine)
+		m.Section = matchField(sectionRegex, cleanLine)
+		m.Grid = matchField(gridRegex, cleanLine)
+		m.Alias = extractAlias(cleanLine)
 		parts := strings.Split(cleanLine, "<LF>")
 		if len(parts) == 1 {
 			parts = splitFlattenedCall(cleanLine)
@@ -77,6 +85,9 @@ func decodeMessage(m *models.Message) {
 		// This is a complex mapping of the python logic
 		m.Vehicles = extractVehicles(parts)
 		m.Address, m.Intersection = extractLocations(parts)
+		if nearest := extractNearestIntersection(cleanLine); nearest != "" {
+			m.Intersection = nearest
+		}
 		m.Station = strings.Join(extractStations(m.Vehicles), ",")
 
 		m.Text = strings.ReplaceAll(rawPayload, "<LF>", "\n")
@@ -164,9 +175,52 @@ func extractAlarmType(line string) string {
 func extractIncidentNumber(line string) string {
 	match := incidentRegex.FindStringSubmatch(line)
 	if len(match) > 1 {
-		return match[1]
+		if strings.HasPrefix(match[1], "26-") {
+			return match[1]
+		}
+		return "26-" + match[1]
 	}
 	return ""
+}
+
+func matchField(re *regexp.Regexp, text string) string {
+	match := re.FindStringSubmatch(text)
+	if len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func extractAlias(text string) string {
+	value := matchField(aliasRegex, text)
+	if value == "" {
+		return ""
+	}
+	if loc := vehicleRegex.FindStringIndex(value); loc != nil {
+		value = value[:loc[0]]
+	}
+	if hash := strings.Index(value, "#"); hash >= 0 {
+		value = value[:hash]
+	}
+	return strings.TrimSpace(strings.TrimRight(value, "/ "))
+}
+
+func extractNearestIntersection(text string) string {
+	gridLoc := gridRegex.FindStringIndex(text)
+	if gridLoc == nil {
+		return ""
+	}
+	value := strings.TrimSpace(text[gridLoc[1]:])
+	end := len(value)
+	for _, marker := range []string{"<LF>", "Alias:"} {
+		if idx := strings.Index(strings.ToLower(value), strings.ToLower(marker)); idx >= 0 && idx < end {
+			end = idx
+		}
+	}
+	if loc := vehicleRegex.FindStringIndex(value); loc != nil && loc[0] < end {
+		end = loc[0]
+	}
+	return strings.TrimSpace(strings.TrimRight(value[:end], "/ "))
 }
 
 func extractVehicles(parts []string) []string {
@@ -267,7 +321,7 @@ func extractLocations(parts []string) (string, string) {
 	if gdIdx != -1 {
 		interParts := []string{}
 		for i := gdIdx + 1; i < len(parts)-2; i++ {
-			if strings.Contains(parts[i], "#") || isVehicleLine(parts[i]) {
+			if strings.Contains(parts[i], "#") || strings.Contains(strings.ToLower(parts[i]), "alias:") || isVehicleLine(parts[i]) {
 				break
 			}
 			interParts = append(interParts, parts[i])

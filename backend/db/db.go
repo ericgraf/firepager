@@ -69,6 +69,10 @@ func createSchema() {
 		vehicles TEXT[] DEFAULT '{}',
 		address TEXT,
 		intersection TEXT,
+		dv TEXT,
+		sec TEXT,
+		gd TEXT,
+		alias TEXT,
 		latitude DOUBLE PRECISION,
 		longitude DOUBLE PRECISION,
 		client_id VARCHAR(100),
@@ -212,6 +216,10 @@ func createSchema() {
 		IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='raw_text') THEN
 			ALTER TABLE messages ADD COLUMN raw_text TEXT;
 		END IF;
+		ALTER TABLE messages ADD COLUMN IF NOT EXISTS dv TEXT;
+		ALTER TABLE messages ADD COLUMN IF NOT EXISTS sec TEXT;
+		ALTER TABLE messages ADD COLUMN IF NOT EXISTS gd TEXT;
+		ALTER TABLE messages ADD COLUMN IF NOT EXISTS alias TEXT;
 	END $$;
 
 	CREATE TABLE IF NOT EXISTS system_configs (
@@ -365,8 +373,8 @@ func seedAdminUser() {
 
 func SaveMessage(msg *models.Message) error {
 	query := `INSERT INTO messages (
-		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
+		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id, station
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
@@ -375,7 +383,8 @@ func SaveMessage(msg *models.Message) error {
 	_, err = tx.Exec(query,
 		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.RawText, msg.Type,
 		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles),
-		msg.Address, msg.Intersection, msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
+		msg.Address, msg.Intersection, msg.DV, msg.Section, msg.Grid, msg.Alias,
+		msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
 	if err != nil {
 		return err
 	}
@@ -464,7 +473,7 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 
 	args = append(args, limit+1)
 	query := `SELECT id, timestamp, source, text, COALESCE(raw_text, ''), type, page_id, call_type,
-		incident_number, vehicles, address, intersection, latitude, longitude, client_id, station
+		incident_number, vehicles, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id, station
 		FROM messages WHERE ` + strings.Join(conditions, " AND ") +
 		` ORDER BY timestamp DESC, id DESC LIMIT $` + fmt.Sprint(len(args))
 	rows, err := DB.Query(query, args...)
@@ -479,7 +488,8 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 		if err := rows.Scan(
 			&m.ID, &m.Timestamp, &m.Source, &m.Text, &m.RawText, &m.Type,
 			&m.PageID, &m.CallType, &m.IncidentNumber, pq.Array(&m.Vehicles),
-			&m.Address, &m.Intersection, &m.Latitude, &m.Longitude, &m.ClientID, &m.Station,
+			&m.Address, &m.Intersection, &m.DV, &m.Section, &m.Grid, &m.Alias,
+			&m.Latitude, &m.Longitude, &m.ClientID, &m.Station,
 		); err != nil {
 			return nil, err
 		}
