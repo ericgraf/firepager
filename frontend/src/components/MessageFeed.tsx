@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { AddressLink } from './AddressLink';
 import { CallMap } from './CallMap';
 import { DashboardCallMap } from './DashboardCallMap';
 import './components.css';
@@ -155,7 +156,7 @@ export function MessageFeed({ selectedVehicles }: MessageFeedProps) {
               incidentNumber={selectedCall.incident_number}
             />
             <div className="modal-footer">
-              <p><strong>Location:</strong> {selectedCall.address} {selectedCall.intersection ? `(${selectedCall.intersection})` : ''}</p>
+              <p><strong>Location:</strong> <AddressLink address={selectedCall.address} intersection={selectedCall.intersection} /> {selectedCall.intersection ? `(${selectedCall.intersection})` : ''}</p>
               <p><strong>Vehicles:</strong> {formatVehicles(selectedCall.vehicles)}</p>
               <p className="small-text">Timestamp: {new Date(selectedCall.timestamp).toLocaleString()}</p>
               {selectedCall.raw_text && (
@@ -223,7 +224,7 @@ export function MessageFeed({ selectedVehicles }: MessageFeedProps) {
                       <td><span className="call-type-text">{msg.call_type}</span></td>
                       <td>
                         <div className="location-cell">
-                          <div className="address">{msg.address}</div>
+                          <div className="address"><AddressLink address={msg.address} intersection={msg.intersection} /></div>
                           {msg.intersection && <div className="intersection">Int: {msg.intersection}</div>}
                         </div>
                       </td>

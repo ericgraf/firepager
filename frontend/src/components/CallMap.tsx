@@ -1,6 +1,7 @@
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import { AddressLink } from './AddressLink';
 import './components.css';
 
 // Fix for default marker icon in Leaflet
@@ -38,7 +39,7 @@ export function CallMap({ lat, lng, address, callType, incidentNumber }: CallMap
     return (
       <div className="map-placeholder">
         <p>No location data available for this call yet.</p>
-        <p className="small-text">{address}</p>
+        <p className="small-text"><AddressLink address={address} /></p>
       </div>
     );
   }
@@ -53,7 +54,7 @@ export function CallMap({ lat, lng, address, callType, incidentNumber }: CallMap
         <Marker position={[lat, lng]}>
           <Popup>
             <strong>{callType}</strong><br />
-            {address}<br />
+            <AddressLink address={address}>{address}</AddressLink><br />
             #{incidentNumber}
           </Popup>
         </Marker>
