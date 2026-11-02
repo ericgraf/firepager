@@ -25,6 +25,18 @@ class WaterfallSenderTests(unittest.TestCase):
         parsed = sender.parse_rtl_power_row(row)
         self.assertEqual(len(parsed["power_db"]), sender.MAX_BINS)
 
+    def test_stream_parser_retains_partial_line_until_newline(self):
+        row_text = "2026-10-31, 18:00:05, 155538000, 155658000, 250, 4140, -80, -45\n"
+        rows = []
+        pending = bytearray()
+        split = len(row_text) // 2
+        sender.append_spectrum_lines(rows, pending, row_text[:split].encode())
+        self.assertEqual(rows, [])
+        sender.append_spectrum_lines(rows, pending, row_text[split:].encode())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["power_db"], [-80.0, -45.0])
+        self.assertEqual(pending, b"")
+
     def test_snapshot_has_consistent_frequency_grid_and_bounded_rows(self):
         rows = [{"captured_at": "2026-10-31T18:00:%02dZ" % i,
                  "start_hz": 155538000.0, "step_hz": 250.0,
@@ -43,13 +55,16 @@ class WaterfallSenderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sender.make_snapshot("remote-pi-sdr", rows)
 
-    def test_static_capture_command_uses_manual_receiver_settings(self):
+    def test_persistent_capture_command_uses_manual_receiver_settings(self):
         args = sender.parse_args([])
         command = sender.rtl_power_command(args)
+        self.assertEqual(command[:3], ["stdbuf", "-oL", "rtl_power"])
         self.assertIn("-f", command)
         self.assertIn(sender.DEFAULT_RANGE_HZ, command)
+        self.assertIn("-i", command)
         self.assertIn("-p", command)
         self.assertIn("-g", command)
+        self.assertNotIn("-1", command)
         self.assertEqual(command[-1], "-")
 
 

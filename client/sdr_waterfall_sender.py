@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import selectors
 import signal
 import subprocess
 import sys
@@ -90,6 +91,25 @@ def make_snapshot(receiver_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any
     return snapshot
 
 
+def append_spectrum_lines(rows: List[Dict[str, Any]], pending: bytearray, data: bytes) -> None:
+    """Parse complete CSV lines from an unbuffered rtl_power output stream."""
+    pending.extend(data)
+    while True:
+        newline = pending.find(b"\n")
+        if newline < 0:
+            break
+        line = bytes(pending[:newline])
+        del pending[:newline + 1]
+        row = parse_rtl_power_row(line.decode("utf-8", errors="replace"))
+        if row is None:
+            continue
+        if rows and (row["start_hz"], row["step_hz"], len(row["power_db"])) != (
+                rows[0]["start_hz"], rows[0]["step_hz"], len(rows[0]["power_db"])):
+            rows.clear()
+        rows.append(row)
+    del rows[:-MAX_ROWS]
+
+
 def publish_snapshot(snapshot: Dict[str, Any], broker_url: str) -> None:
     """Publish one persistent snapshot with broker confirmation."""
     if not broker_url:
@@ -118,10 +138,13 @@ def publish_snapshot(snapshot: Dict[str, Any], broker_url: str) -> None:
 
 
 def rtl_power_command(args: argparse.Namespace) -> List[str]:
-    """Construct one fixed-tune, manual-gain spectrum scan."""
+    """Construct a persistent fixed-tune, manual-gain spectrum scan."""
     return [
-        "rtl_power", "-f", args.frequency_range, "-i", str(args.integration_seconds),
-        "-1", "-g", str(args.gain), "-p", str(args.ppm), "-d", str(args.device), "-",
+        # rtl_power block-buffers CSV output when stdout is a pipe. Line-buffer
+        # it so complete measured rows are available during a long-running scan.
+        "stdbuf", "-oL", "rtl_power", "-f", args.frequency_range,
+        "-i", str(args.integration_seconds), "-g", str(args.gain),
+        "-p", str(args.ppm), "-d", str(args.device), "-",
     ]
 
 
@@ -153,41 +176,42 @@ def run(args: argparse.Namespace) -> int:
     LOG.info("Band=%s integration=%ss upload_interval=%ss", args.frequency_range,
              args.integration_seconds, args.interval_seconds)
     rows: List[Dict[str, Any]] = []
+    pending_output = bytearray()
     next_publish = time.monotonic() + args.interval_seconds
+    process = None
+    selector = selectors.DefaultSelector()
     try:
+        try:
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+        except OSError as exc:
+            LOG.error("Could not start rtl_power (%s)", type(exc).__name__)
+            return 2
+        if process.stdout is None:
+            LOG.error("rtl_power stdout unavailable")
+            return 2
+        stdout_fd = process.stdout.fileno()
+        os.set_blocking(stdout_fd, False)
+        selector.register(stdout_fd, selectors.EVENT_READ)
         while not stopping:
-            try:
-                result = subprocess.run(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding="utf-8", errors="replace",
-                    # A full rtl_power sweep can take much longer than one
-                    # integration period: each tuned slice is integrated in
-                    # turn. Allow up to two upload intervals because rtl_power
-                    # may spend additional time sweeping its tuned slices,
-                    # otherwise a 120 kHz/5 s capture is killed at 30 s and
-                    # never produces a waterfall snapshot.
-                    timeout=max(30, args.interval_seconds * 2), check=False,
-                )
-            except subprocess.TimeoutExpired:
-                LOG.warning("rtl_power scan timed out; will retry next interval")
-                result = None
-            except OSError as exc:
-                LOG.error("Could not run rtl_power (%s)", type(exc).__name__)
-                return 2
+            now = time.monotonic()
+            wait = max(0.0, min(0.5, next_publish - now))
+            if selector.select(wait):
+                try:
+                    output = os.read(stdout_fd, 65536)
+                except BlockingIOError:
+                    output = None
+                if output:
+                    append_spectrum_lines(rows, pending_output, output)
+                elif output == b"" and process.poll() is not None:
+                    LOG.error("rtl_power exited with status %s", process.returncode)
+                    return process.returncode or 1
 
-            if result is not None:
-                if result.returncode != 0:
-                    LOG.warning("rtl_power scan failed with status %s", result.returncode)
-                else:
-                    for line in result.stdout.splitlines():
-                        row = parse_rtl_power_row(line)
-                        if row is None:
-                            continue
-                        if rows and (row["start_hz"], row["step_hz"], len(row["power_db"])) != (
-                                rows[0]["start_hz"], rows[0]["step_hz"], len(rows[0]["power_db"])):
-                            rows.clear()
-                        rows.append(row)
-                    rows = rows[-MAX_ROWS:]
+            if process.poll() is not None:
+                LOG.error("rtl_power exited with status %s", process.returncode)
+                return process.returncode or 1
 
             if time.monotonic() >= next_publish:
                 if rows:
@@ -204,10 +228,21 @@ def run(args: argparse.Namespace) -> int:
                                     type(exc).__name__)
                 else:
                     LOG.warning("No complete rtl_power rows at snapshot interval")
-                next_publish = time.monotonic() + args.interval_seconds
-            if not stopping:
-                time.sleep(0.1)
+                next_publish += args.interval_seconds
+                while next_publish <= time.monotonic():
+                    next_publish += args.interval_seconds
     finally:
+        selector.close()
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
         if lock:
             lock.release()
     return 0
