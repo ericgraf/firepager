@@ -15,6 +15,16 @@ func TestMatchesSubscriptionRule(t *testing.T) {
 	}
 }
 
+func TestMatchesSubscriptionRuleUsesStationEntities(t *testing.T) {
+	message := Message{Stations: []string{"82", "81", "46", "60"}, CallType: "Structure Fire"}
+	if !MatchesSubscriptionRule(message, SubscriptionRule{Station: "46", Enabled: true}) {
+		t.Fatal("expected matching individual station entity to match")
+	}
+	if MatchesSubscriptionRule(message, SubscriptionRule{Station: "4", Enabled: true}) {
+		t.Fatal("expected partial station code not to match")
+	}
+}
+
 func TestMatchesSubscription(t *testing.T) {
 	message := Message{Station: "12", CallType: "Medical"}
 	settings := SubscriptionSettings{Enabled: true, Rules: []SubscriptionRule{{CallType: "Medical", Enabled: true}}}

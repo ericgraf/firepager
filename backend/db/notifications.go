@@ -19,9 +19,10 @@ func enqueueMatchingDeliveries(tx *sql.Tx, msg *models.Message) error {
 		WHERE c.enabled AND EXISTS (
 			SELECT 1 FROM user_subscription_rules r
 			WHERE r.user_id = c.user_id AND r.enabled
-			AND (r.station = '' OR EXISTS (SELECT 1 FROM regexp_split_to_table($1, ',') station WHERE BTRIM(station) ILIKE r.station))
-			AND (r.call_type = '' OR r.call_type ILIKE $2)
-		)`, msg.Station, msg.CallType)
+			AND (r.station = '' OR r.station = ANY(COALESCE($1::TEXT[], ARRAY[]::TEXT[]))
+				OR ($2 <> '' AND EXISTS (SELECT 1 FROM regexp_split_to_table($2, ',') station WHERE BTRIM(station) ILIKE r.station)))
+			AND (r.call_type = '' OR r.call_type ILIKE $3)
+		)`, pq.Array(msg.Stations), msg.Station, msg.CallType)
 	if err != nil {
 		return err
 	}
@@ -64,8 +65,8 @@ func ClaimNotificationDelivery(lease time.Duration) (*models.NotificationDeliver
 		}
 		return nil, err
 	}
-	if err := DB.QueryRow(`SELECT id,timestamp,source,text,raw_text,type,page_id,call_type,incident_number,vehicles,address,intersection,latitude,longitude,client_id,station FROM messages WHERE id=$1`, d.MessageID).Scan(
-		&d.Message.ID, &d.Message.Timestamp, &d.Message.Source, &d.Message.Text, &d.Message.RawText, &d.Message.Type, &d.Message.PageID, &d.Message.CallType, &d.Message.IncidentNumber, pq.Array(&d.Message.Vehicles), &d.Message.Address, &d.Message.Intersection, &d.Message.Latitude, &d.Message.Longitude, &d.Message.ClientID, &d.Message.Station); err != nil {
+	if err := DB.QueryRow(`SELECT id,timestamp,source,text,raw_text,type,page_id,call_type,incident_number,vehicles,stations,address,intersection,latitude,longitude,client_id,station FROM messages WHERE id=$1`, d.MessageID).Scan(
+		&d.Message.ID, &d.Message.Timestamp, &d.Message.Source, &d.Message.Text, &d.Message.RawText, &d.Message.Type, &d.Message.PageID, &d.Message.CallType, &d.Message.IncidentNumber, pq.Array(&d.Message.Vehicles), pq.Array(&d.Message.Stations), &d.Message.Address, &d.Message.Intersection, &d.Message.Latitude, &d.Message.Longitude, &d.Message.ClientID, &d.Message.Station); err != nil {
 		return nil, fmt.Errorf("load notification message: %w", err)
 	}
 	return d, nil

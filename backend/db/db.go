@@ -67,6 +67,7 @@ func createSchema() {
 		call_type VARCHAR(100),
 		incident_number VARCHAR(50),
 		vehicles TEXT[] DEFAULT '{}',
+		stations TEXT[] NOT NULL DEFAULT '{}',
 		address TEXT,
 		intersection TEXT,
 		dv TEXT,
@@ -78,6 +79,14 @@ func createSchema() {
 		client_id VARCHAR(100),
 		station VARCHAR(50)
 	);
+	ALTER TABLE messages ADD COLUMN IF NOT EXISTS stations TEXT[] NOT NULL DEFAULT '{}';
+	UPDATE messages
+	SET stations = COALESCE((
+		SELECT array_agg(BTRIM(code) ORDER BY ordinal)
+		FROM unnest(string_to_array(COALESCE(station, ''), ',')) WITH ORDINALITY AS legacy(code, ordinal)
+		WHERE BTRIM(code) <> ''
+	), ARRAY[]::TEXT[])
+	WHERE COALESCE(cardinality(stations), 0) = 0 AND BTRIM(COALESCE(station, '')) <> '';
 	CREATE TABLE IF NOT EXISTS receiver_status (
 		receiver_id VARCHAR(100) PRIMARY KEY,
 		host VARCHAR(255) NOT NULL DEFAULT '',
@@ -373,8 +382,8 @@ func seedAdminUser() {
 
 func SaveMessage(msg *models.Message) error {
 	query := `INSERT INTO messages (
-		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id, station
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
+		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, stations, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id, station
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, ARRAY[]::TEXT[]), $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
@@ -382,7 +391,7 @@ func SaveMessage(msg *models.Message) error {
 	defer tx.Rollback()
 	_, err = tx.Exec(query,
 		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.RawText, msg.Type,
-		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles),
+		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles), pq.Array(msg.Stations),
 		msg.Address, msg.Intersection, msg.DV, msg.Section, msg.Grid, msg.Alias,
 		msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
 	if err != nil {
@@ -448,7 +457,8 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 		conditions = append(conditions, "client_id = "+arg(q.ClientID))
 	}
 	if q.Station != "" {
-		conditions = append(conditions, "station ILIKE "+arg("%"+q.Station+"%"))
+		stationArg := arg(q.Station)
+		conditions = append(conditions, "(stations @> ARRAY["+stationArg+"]::TEXT[] OR EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE(station, ''), ',')) AS legacy(station_code) WHERE BTRIM(legacy.station_code) = "+stationArg+"))")
 	}
 	if q.CallType != "" {
 		conditions = append(conditions, "call_type = "+arg(q.CallType))
@@ -474,7 +484,7 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 	args = append(args, limit+1)
 	query := `SELECT id, timestamp, COALESCE(source, ''), COALESCE(text, ''), COALESCE(raw_text, ''),
 		COALESCE(type, ''), COALESCE(page_id, ''), COALESCE(call_type, ''), COALESCE(incident_number, ''),
-		COALESCE(vehicles, ARRAY[]::TEXT[]), COALESCE(address, ''), COALESCE(intersection, ''),
+		COALESCE(vehicles, ARRAY[]::TEXT[]), COALESCE(stations, ARRAY[]::TEXT[]), COALESCE(address, ''), COALESCE(intersection, ''),
 		COALESCE(dv, ''), COALESCE(sec, ''), COALESCE(gd, ''), COALESCE(alias, ''),
 		COALESCE(latitude, 0), COALESCE(longitude, 0), COALESCE(client_id, ''), COALESCE(station, '')
 		FROM messages WHERE ` + strings.Join(conditions, " AND ") +
@@ -490,7 +500,7 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 		var m models.Message
 		if err := rows.Scan(
 			&m.ID, &m.Timestamp, &m.Source, &m.Text, &m.RawText, &m.Type,
-			&m.PageID, &m.CallType, &m.IncidentNumber, pq.Array(&m.Vehicles),
+			&m.PageID, &m.CallType, &m.IncidentNumber, pq.Array(&m.Vehicles), pq.Array(&m.Stations),
 			&m.Address, &m.Intersection, &m.DV, &m.Section, &m.Grid, &m.Alias,
 			&m.Latitude, &m.Longitude, &m.ClientID, &m.Station,
 		); err != nil {
@@ -988,7 +998,8 @@ func GetMetricsFiltered(q MetricsQuery) (*models.Metrics, error) {
 		conditions = append(conditions, "client_id = "+add(q.ClientID))
 	}
 	if q.Station != "" {
-		conditions = append(conditions, "station ILIKE "+add("%"+q.Station+"%"))
+		stationArg := add(q.Station)
+		conditions = append(conditions, "(stations @> ARRAY["+stationArg+"]::TEXT[] OR EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE(station, ''), ',')) AS legacy(station_code) WHERE BTRIM(legacy.station_code) = "+stationArg+"))")
 	}
 	if q.CallType != "" {
 		conditions = append(conditions, "call_type = "+add(q.CallType))
@@ -1047,8 +1058,8 @@ func GetMetricsFiltered(q MetricsQuery) (*models.Metrics, error) {
 	}
 
 	// By Station (Calls only)
-	stationWhere := where + " AND type = 'CALL' AND station <> ''"
-	rows, err = DB.Query("SELECT station FROM messages WHERE "+stationWhere, args...)
+	stationWhere := where + " AND type = 'CALL' AND (COALESCE(cardinality(stations), 0) > 0 OR station <> '')"
+	rows, err = DB.Query("SELECT UNNEST(CASE WHEN COALESCE(cardinality(stations), 0) > 0 THEN stations ELSE string_to_array(COALESCE(station, ''), ',') END) FROM messages WHERE "+stationWhere, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,11 +1070,8 @@ func GetMetricsFiltered(q MetricsQuery) (*models.Metrics, error) {
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		for _, station := range strings.Split(raw, ",") {
-			station = strings.TrimSpace(station)
-			if station == "" {
-				continue
-			}
+		station := strings.TrimSpace(raw)
+		if station != "" {
 			stationCounts[station]++
 		}
 	}

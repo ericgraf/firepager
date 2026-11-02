@@ -13,6 +13,7 @@ type Message struct {
 	CallType       string    `json:"call_type"`
 	IncidentNumber string    `json:"incident_number"`
 	Vehicles       []string  `json:"vehicles"`
+	Stations       []string  `json:"stations"`
 	Address        string    `json:"address"`
 	Intersection   string    `json:"intersection"`
 	DV             string    `json:"dv"`
@@ -22,7 +23,7 @@ type Message struct {
 	Latitude       float64   `json:"latitude"`
 	Longitude      float64   `json:"longitude"`
 	ClientID       string    `json:"client_id"`
-	Station        string    `json:"station"`
+	Station        string    `json:"station"` // Deprecated comma-separated compatibility field; use Stations.
 }
 
 // MessagePage is returned by the paginated messages endpoint. Cursor is an

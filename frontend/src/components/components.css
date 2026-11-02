@@ -221,6 +221,13 @@ button:hover {
   border: 1px solid var(--border);
 }
 
+.station-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
 .incident-text {
   color: var(--accent);
   font-weight: 700;

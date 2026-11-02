@@ -18,6 +18,7 @@ type Call = {
   sec: string;
   gd: string;
   alias: string;
+  stations: string[];
   latitude?: number;
   longitude?: number;
   client_id: string;
@@ -50,6 +51,11 @@ function text(value: unknown, fallback = '—') {
   return value === null || value === undefined || String(value).trim() === '' ? fallback : String(value);
 }
 
+function stationCodes(value: unknown, legacyValue?: unknown) {
+  const source = Array.isArray(value) && value.length > 0 ? value : String(legacyValue ?? '').split(',');
+  return [...new Set(source.map(String).map((station) => station.trim()).filter(Boolean))];
+}
+
 function normalize(raw: Record<string, unknown>, index: number): Call {
   return {
     id: text(raw.id ?? raw.message_id, `call-${index}`),
@@ -59,7 +65,7 @@ function normalize(raw: Record<string, unknown>, index: number): Call {
     vehicles: raw.vehicles as Call['vehicles'], address: text(raw.address), intersection: text(raw.intersection, ''),
     dv: text(raw.dv, ''), sec: text(raw.sec, ''), gd: text(raw.gd, ''), alias: text(raw.alias, ''),
     latitude: Number(raw.latitude) || undefined, longitude: Number(raw.longitude) || undefined,
-    client_id: text(raw.client_id ?? raw.clientId), station: text(raw.station),
+    client_id: text(raw.client_id ?? raw.clientId), station: text(raw.station), stations: stationCodes(raw.stations, raw.station),
     source: text(raw.source), text: text(raw.text, ''), raw
   };
 }
@@ -103,6 +109,7 @@ function isRecent(timestamp: string, range: Range) {
 
 function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
   const assignedUnits = vehicles(call.vehicles);
+  const assignedStations = call.stations;
   const hasCoordinates = Number.isFinite(call.latitude) && Number.isFinite(call.longitude)
     && call.latitude !== 0 && call.longitude !== 0;
   const locationQuery = [call.address, call.intersection].filter(Boolean).join(', ');
@@ -122,7 +129,7 @@ function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
     </div>
     <header className="call-detail-hero">
       <div>
-        <p className="eyebrow">{call.station !== '—' ? `${call.station} · ` : ''}{call.call_type}</p>
+        <p className="eyebrow">{assignedStations.length ? `${assignedStations.join(', ')} · ` : ''}{call.call_type}</p>
         <h2>#{call.incident_number}</h2>
         <p className="call-detail-reported">Reported {new Date(call.timestamp).toLocaleString()}</p>
       </div>
@@ -161,6 +168,8 @@ function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
             {call.dv && <div><dt>Division</dt><dd>{call.dv}</dd></div>}
             {call.sec && <div><dt>Section</dt><dd>{call.sec}</dd></div>}
             {call.gd && <div><dt>Grid</dt><dd>{call.gd}</dd></div>}
+            {hasCoordinates && <div><dt>Latitude</dt><dd>{call.latitude!.toFixed(6)}</dd></div>}
+            {hasCoordinates && <div><dt>Longitude</dt><dd>{call.longitude!.toFixed(6)}</dd></div>}
           </dl>
           <p className="call-location-data-note">These are the location details included with the dispatch. Property, parcel, photo, listing, and site-plan records are not connected yet.</p>
         </section>
@@ -175,7 +184,7 @@ function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
         <section className="card">
           <div className="section-heading"><div><p className="eyebrow">Response</p><h3>Assigned resources</h3></div></div>
           <dl className="call-detail-facts">
-            <div><dt>Station</dt><dd>{text(call.station)}</dd></div>
+            <div><dt>Stations</dt><dd className="station-badges">{assignedStations.length ? assignedStations.map((station) => <span className="station-badge" key={station}>ST {station}</span>) : '—'}</dd></div>
             <div><dt>Units</dt><dd>{assignedUnits.length ? assignedUnits.join(', ') : 'No units listed'}</dd></div>
             <div><dt>Receiving node</dt><dd>{text(call.client_id)}</dd></div>
           </dl>
@@ -292,14 +301,14 @@ export function OperatorDashboard() {
     const query = search.trim().toLowerCase();
     if (serverMode) return calls;
     return calls.filter((call) => isRecent(call.timestamp, range)
-      && (station === 'all' || call.station === station)
+      && (station === 'all' || call.stations.includes(station))
       && (callType === 'all' || call.call_type === callType)
-      && (!query || [call.incident_number, call.address, call.call_type, call.station, call.client_id].join(' ').toLowerCase().includes(query))
+      && (!query || [call.incident_number, call.address, call.call_type, call.stations.join(' '), call.client_id].join(' ').toLowerCase().includes(query))
     ).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   }, [calls, serverMode, range, station, callType, search, page]);
 
   const facets = useMemo(() => ({
-    stations: [...new Set(calls.map((call) => call.station).filter((value) => value !== '—'))].slice(0, 100),
+    stations: [...new Set(calls.flatMap((call) => call.stations))].slice(0, 100),
     types: [...new Set(calls.map((call) => call.call_type).filter((value) => value !== '—'))].slice(0, 100)
   }), [calls]);
   const stats = useMemo(() => {
@@ -308,7 +317,7 @@ export function OperatorDashboard() {
     values.forEach((call) => byType.set(call.call_type, (byType.get(call.call_type) || 0) + 1));
     const summaryTypes = metricSummary?.by_type;
     if (Array.isArray(summaryTypes)) summaryTypes.forEach((item) => { const entry = item as Record<string, unknown>; const label = text(entry.label ?? entry.name, 'Unclassified'); const value = Number(entry.value ?? entry.count); if (Number.isFinite(value)) byType.set(label, value); });
-    return { incidents: Number(metricSummary?.distinct_incidents) || new Set(values.map((call) => call.incident_number)).size, stations: Number(metricSummary?.active_stations) || new Set(values.map((call) => call.station)).size, units: Number(metricSummary?.vehicle_mentions) || values.reduce((sum, call) => sum + vehicles(call.vehicles).length, 0), byType: [...byType.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5) };
+    return { incidents: Number(metricSummary?.distinct_incidents) || new Set(values.map((call) => call.incident_number)).size, stations: Number(metricSummary?.active_stations) || new Set(values.flatMap((call) => call.stations)).size, units: Number(metricSummary?.vehicle_mentions) || values.reduce((sum, call) => sum + vehicles(call.vehicles).length, 0), byType: [...byType.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5) };
   }, [calls, serverMode, range, metricSummary]);
   const pages = serverMode ? Math.max(1, page + (calls.length === PAGE_SIZE && cursors[page + 1] ? 1 : 0)) : Math.max(1, Math.ceil(calls.length / PAGE_SIZE));
 
@@ -345,12 +354,12 @@ export function OperatorDashboard() {
                   <span className="time-text">{formatTime(call.timestamp)}</span>
                 </span>
                 <span className="call-card-loc"><strong><AddressLink address={call.address} intersection={call.intersection} /></strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</span>
-                <span className="call-card-foot"><span className="station-badge">{call.station}</span><span className="client-text">{vehicles(call.vehicles).slice(0, 3).join(', ') || 'No units'}</span></span>
+                <span className="call-card-foot"><span className="station-badges">{call.stations.length ? call.stations.map((code) => <span className="station-badge" key={code}>ST {code}</span>) : '—'}</span><span className="client-text">{vehicles(call.vehicles).slice(0, 3).join(', ') || 'No units'}</span></span>
               </button>
             </li>
           )) : <li className="empty-state">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</li>}
         </ul>
-       ) : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Station</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong><AddressLink address={call.address} intersection={call.intersection} /></strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</td><td><span className="station-badge">{call.station}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
+       ) : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Stations</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong><AddressLink address={call.address} intersection={call.intersection} /></strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</td><td><span className="station-badges">{call.stations.length ? call.stations.map((code) => <span className="station-badge" key={code}>ST {code}</span>) : '—'}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
        <div className="pagination"><span>Showing {visible.length ? ((page - 1) * PAGE_SIZE) + 1 : 0}–{Math.min((page - 1) * PAGE_SIZE + visible.length, (serverMode ? total || page * PAGE_SIZE : calls.length))} {serverMode && !total ? '' : `of ${serverMode ? total : calls.length}`}</span><div><button type="button" className="secondary-button" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page}{serverMode && !total ? '' : ` / ${pages}`}</span><button type="button" className="secondary-button" disabled={serverMode ? !cursors[page + 1] : page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>
     </section>
     <section className="calls-panel card"><div className="section-heading"><div><p className="eyebrow">Decoded receiver traffic</p><h3>Pager messages</h3><p className="operator-subtitle">Latest decoded pages received by FirePager.</p></div><span className="count-badge">{pagerMessages.length}</span></div>

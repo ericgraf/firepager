@@ -96,7 +96,8 @@ func decodeMessage(m *models.Message) {
 		if nearest := extractNearestIntersection(cleanLine); nearest != "" {
 			m.Intersection = nearest
 		}
-		m.Station = strings.Join(extractStations(m.Vehicles), ",")
+		m.Stations = extractStations(m.Vehicles)
+		m.Station = strings.Join(m.Stations, ",")
 
 		m.Text = strings.ReplaceAll(rawPayload, "<LF>", "\n")
 	} else {

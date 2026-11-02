@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/firepager/backend/db"
@@ -19,6 +20,9 @@ import (
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+var geocodingRateMu sync.Mutex
+var lastGeocodingRequest time.Time
 
 func StartConsumer() {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
@@ -236,6 +240,7 @@ func geocodeMessage(msg *models.Message) (float64, float64, error) {
 	}
 	req.Header.Set("User-Agent", geocodingUserAgent())
 	req.Header.Set("Accept", "application/json")
+	waitForGeocodingRateLimit()
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -277,6 +282,17 @@ func geocodeMessage(msg *models.Message) (float64, float64, error) {
 	}
 
 	return 0, 0, fmt.Errorf("no geocoding results for %q", searchQuery)
+}
+
+// Public Nominatim usage is limited to one request per second. Keep the
+// processor within that limit even if multiple consumer goroutines are added.
+func waitForGeocodingRateLimit() {
+	geocodingRateMu.Lock()
+	defer geocodingRateMu.Unlock()
+	if wait := time.Second - time.Since(lastGeocodingRequest); wait > 0 && !lastGeocodingRequest.IsZero() {
+		time.Sleep(wait)
+	}
+	lastGeocodingRequest = time.Now()
 }
 
 func geocodingUserAgent() string {
