@@ -22,6 +22,14 @@ type Call = {
 
 type Range = '24h' | '7d' | 'all';
 type Result = { items: Call[]; total: number; nextCursor?: string; hasMore: boolean; serverFiltered: boolean };
+type PagerMessage = {
+  id: string;
+  timestamp: string;
+  type: string;
+  text: string;
+  raw_text: string;
+  client_id: string;
+};
 
 const PAGE_SIZE = 25;
 const POLL_MS = 15_000;
@@ -83,6 +91,8 @@ function isRecent(timestamp: string, range: Range) {
 export function OperatorDashboard() {
   const { token, user } = useAuth();
   const [calls, setCalls] = useState<Call[]>([]);
+  const [pagerMessages, setPagerMessages] = useState<PagerMessage[]>([]);
+  const [messagesError, setMessagesError] = useState('');
   const [total, setTotal] = useState(0);
   const [range, setRange] = useState<Range>('24h');
   const [station, setStation] = useState('all');
@@ -97,6 +107,19 @@ export function OperatorDashboard() {
   const [serverMode, setServerMode] = useState(false);
   const [metricSummary, setMetricSummary] = useState<Record<string, unknown> | null>(null);
   const pageCursor = cursors[page] || '';
+
+  const loadPagerMessages = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await fetch('/api/messages?limit=25', { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`Unable to load pager messages (${response.status})`);
+      const result = await response.json() as { messages?: PagerMessage[] } | PagerMessage[];
+      setPagerMessages(Array.isArray(result) ? result : result.messages || []);
+      setMessagesError('');
+    } catch (err) {
+      setMessagesError(err instanceof Error ? err.message : 'Unable to load pager messages');
+    }
+  }, [token]);
 
   const load = useCallback(async (background = false) => {
     if (!token) return;
@@ -127,6 +150,11 @@ export function OperatorDashboard() {
   }, [token, range, search, station, callType, page, pageCursor]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void loadPagerMessages();
+    const interval = window.setInterval(() => void loadPagerMessages(), POLL_MS);
+    return () => window.clearInterval(interval);
+  }, [loadPagerMessages]);
   useEffect(() => {
     const interval = window.setInterval(() => void load(true), POLL_MS);
     return () => window.clearInterval(interval);
@@ -178,6 +206,12 @@ export function OperatorDashboard() {
       <div className="call-filters"><label className="search-field"><span>⌕</span><input value={search} onChange={(event) => changeFilter(setSearch, event.target.value)} placeholder="Search incident, location, station…" aria-label="Search calls" /></label><select value={range} onChange={(event) => changeFilter((value) => setRange(value as Range), event.target.value)} aria-label="Time range"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="all">All available</option></select><select value={station} onChange={(event) => changeFilter(setStation, event.target.value)} aria-label="Station"><option value="all">All stations</option>{facets.stations.map((value) => <option key={value}>{value}</option>)}</select><select value={callType} onChange={(event) => changeFilter(setCallType, event.target.value)} aria-label="Call type"><option value="all">All call types</option>{facets.types.map((value) => <option key={value}>{value}</option>)}</select><button type="button" className="secondary-button" onClick={() => void load()}>Refresh</button></div>
       {loading && calls.length === 0 ? <div className="skeleton-list" aria-label="Loading calls"><i /><i /><i /></div> : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Station</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong>{call.address}</strong>{call.intersection && <small>{call.intersection}</small>}</td><td><span className="station-badge">{call.station}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
        <div className="pagination"><span>Showing {visible.length ? ((page - 1) * PAGE_SIZE) + 1 : 0}–{Math.min((page - 1) * PAGE_SIZE + visible.length, (serverMode ? total || page * PAGE_SIZE : calls.length))} {serverMode && !total ? '' : `of ${serverMode ? total : calls.length}`}</span><div><button type="button" className="secondary-button" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page}{serverMode && !total ? '' : ` / ${pages}`}</span><button type="button" className="secondary-button" disabled={serverMode ? !cursors[page + 1] : page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>
+    </section>
+    <section className="calls-panel card"><div className="section-heading"><div><p className="eyebrow">Decoded receiver traffic</p><h3>Pager messages</h3><p className="operator-subtitle">Latest decoded pages received by FirePager.</p></div><span className="count-badge">{pagerMessages.length}</span></div>
+      {messagesError && <div className="error operator-alert">{messagesError} <button type="button" onClick={() => void loadPagerMessages()}>Retry</button></div>}
+      <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Receiver</th></tr></thead><tbody>
+        {pagerMessages.length ? pagerMessages.map((message) => <tr key={message.id}><td className="time-text">{formatTime(message.timestamp)}</td><td><span className="call-status">{message.type || 'MESSAGE'}</span></td><td><div>{message.text || message.raw_text || '—'}</div>{message.raw_text && <details className="raw-page-details"><summary>View decoded page</summary><pre className="content-text">{message.raw_text}</pre></details>}</td><td className="client-text">{message.client_id || '—'}</td></tr>) : <tr><td colSpan={4} className="empty-table">{messagesError ? 'Unable to display pager messages.' : 'No decoded pager messages received yet.'}</td></tr>}
+      </tbody></table></div>
     </section>
     {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Location</dt><dd>{selected.address}{selected.intersection && ` · ${selected.intersection}`}</dd></div><div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
   </div>;
