@@ -1076,6 +1076,7 @@ button:hover {
 .call-location-actions .secondary-button { display: inline-flex; align-items: center; text-decoration: none; }
 .call-detail-map { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
 .call-detail-map .map-wrapper { margin: 0; }
+.call-map-search-preview { display: block; width: 100%; height: 300px; border: 0; }
 .call-detail-map .map-placeholder { min-height: 140px; display: grid; place-content: center; text-align: center; padding: 18px; }
 .call-coordinate-note, .call-location-data-note { color: var(--text); font-size: 12px; line-height: 1.5; }
 .call-coordinate-note { margin: 9px 0 0; }

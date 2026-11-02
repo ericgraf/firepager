@@ -111,6 +111,9 @@ function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
   directions.searchParams.set('destination', hasCoordinates
     ? `${call.latitude},${call.longitude}`
     : locationQuery);
+  const mapPreview = new URL('https://maps.google.com/maps');
+  mapPreview.searchParams.set('q', hasCoordinates ? `${call.latitude},${call.longitude}` : locationQuery);
+  mapPreview.searchParams.set('output', 'embed');
 
   return <main className="call-detail-page">
     <div className="call-detail-topbar">
@@ -141,9 +144,13 @@ function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
           <div className="call-detail-map">
             {hasCoordinates
               ? <CallMap lat={call.latitude!} lng={call.longitude!} address={call.address} callType={call.call_type} incidentNumber={call.incident_number} />
-              : <div className="map-placeholder"><p>No verified map coordinates are recorded for this call.</p><p className="small-text">Use the address link to search this location.</p></div>}
+              : locationQuery
+                ? <iframe className="call-map-search-preview" src={mapPreview.toString()} title={`Map search for ${locationQuery}`} loading="lazy" referrerPolicy="no-referrer-when-downgrade" />
+                : <div className="map-placeholder"><p>No address or verified map coordinates are recorded for this call.</p></div>}
           </div>
-          {hasCoordinates && <p className="call-coordinate-note">Recorded coordinates: {call.latitude!.toFixed(5)}, {call.longitude!.toFixed(5)}</p>}
+          {hasCoordinates
+            ? <p className="call-coordinate-note">Verified coordinates recorded with this call: {call.latitude!.toFixed(5)}, {call.longitude!.toFixed(5)}</p>
+            : locationQuery && <p className="call-coordinate-note">Address search preview only. FirePager has not verified or saved a map pin for this call.</p>}
         </section>
 
         <section className="card call-address-context">
