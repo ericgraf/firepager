@@ -18,6 +18,7 @@ func main() {
 	db.InitDB()
 	go mq.RunNotificationWorker(context.Background())
 	go mq.StartReceiverStatusConsumer()
+	go mq.StartReceiverWaterfallConsumer()
 
 	// Run consumer
 	for {

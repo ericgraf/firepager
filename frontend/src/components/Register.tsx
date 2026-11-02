@@ -44,7 +44,7 @@ export function Register() {
   };
 
   return (
-    <div className="card" style={{ maxWidth: '400px', margin: '50px auto' }}>
+    <div className="card auth-card">
       <h2>Register</h2>
       {error && <div className="error">{error}</div>}
       <form onSubmit={handleSubmit} className="user-form">

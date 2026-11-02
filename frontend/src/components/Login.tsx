@@ -34,7 +34,7 @@ export function Login() {
   };
 
   return (
-    <div className="card" style={{ maxWidth: '400px', margin: '100px auto' }}>
+    <div className="card auth-card">
       <h2>Login</h2>
       {error && <div className="error">{error}</div>}
       <form onSubmit={handleSubmit} className="user-form">

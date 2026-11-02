@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link, NavLink } from 'react-router-dom';
 import { AdminDashboard } from './components/AdminDashboard';
 import { Login } from './components/Login';
 import { Register } from './components/Register';
@@ -18,19 +18,48 @@ function ProtectedRoute({ children, adminOnly }: { children: ReactNode, adminOnl
   return <>{children}</>;
 }
 
+function TabIcon({ name }: { name: 'ops' | 'admin' | 'profile' }) {
+  const common = { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
+  if (name === 'ops') {
+    return <svg {...common}><path d="M4 14h3l2-6 4 10 3-8 2 4h2" /></svg>;
+  }
+  if (name === 'admin') {
+    return <svg {...common}><circle cx="12" cy="12" r="3.2" /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1" /></svg>;
+  }
+  return <svg {...common}><circle cx="12" cy="8" r="3.6" /><path d="M4.5 20.5c1.2-3.6 4.1-5.5 7.5-5.5s6.3 1.9 7.5 5.5" /></svg>;
+}
+
 function DashboardLayout({ children }: { children: ReactNode }) {
   const { logout, user } = useAuth();
+  const isAdmin = user?.role === 'admin';
 
   return (
     <div className="app-container">
       <header className="app-header">
         <div className="topbar-brand"><Link to="/" className="brand-link"><span className="brand-mark">F</span><span><strong>firepager</strong><small>operations</small></span></Link></div>
-        <nav className="topbar-nav"><Link to="/">Operations</Link>{user?.role === 'admin' && <Link to="/admin">Admin</Link>}<Link to="/profile">Profile</Link><span className="user-chip">{user?.name || 'Operator'}</span><button type="button" className="logout-button" onClick={logout}>Sign out</button></nav>
+        <nav className="topbar-nav"><Link to="/">Operations</Link>{isAdmin && <Link to="/admin">Admin</Link>}<Link to="/profile">Profile</Link><span className="user-chip">{user?.name || 'Operator'}</span><button type="button" className="logout-button" onClick={logout}>Sign out</button></nav>
       </header>
 
       <main className="app-main">
         {children}
       </main>
+
+      {/* Phone navigation: thumb-reachable, 44px+ targets. Hidden on wide screens. */}
+      <nav className="bottom-nav" aria-label="Primary">
+        <NavLink to="/" end className={({ isActive }) => `tab-link${isActive ? ' active' : ''}`}>
+          <TabIcon name="ops" /><span>Ops</span>
+        </NavLink>
+        {isAdmin && <NavLink to="/admin" className={({ isActive }) => `tab-link${isActive ? ' active' : ''}`}>
+          <TabIcon name="admin" /><span>Admin</span>
+        </NavLink>}
+        <NavLink to="/profile" className={({ isActive }) => `tab-link${isActive ? ' active' : ''}`}>
+          <TabIcon name="profile" /><span>Profile</span>
+        </NavLink>
+        <button type="button" className="tab-link tab-signout" onClick={logout} aria-label="Sign out">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 4H5.5A1.5 1.5 0 0 0 4 5.5v13A1.5 1.5 0 0 0 5.5 20H9" /><path d="M15 8l4 4-4 4M19 12H9" /></svg>
+          <span>Sign out</span>
+        </button>
+      </nav>
     </div>
   );
 }

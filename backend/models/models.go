@@ -15,6 +15,10 @@ type Message struct {
 	Vehicles       []string  `json:"vehicles"`
 	Address        string    `json:"address"`
 	Intersection   string    `json:"intersection"`
+	DV             string    `json:"dv"`
+	Section        string    `json:"sec"`
+	Grid           string    `json:"gd"`
+	Alias          string    `json:"alias"`
 	Latitude       float64   `json:"latitude"`
 	Longitude      float64   `json:"longitude"`
 	ClientID       string    `json:"client_id"`

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { AddressLink } from './AddressLink';
+import { useIsMobile } from '../hooks/useIsMobile';
 import './components.css';
 
 type Call = {
@@ -12,6 +13,10 @@ type Call = {
   vehicles: string[] | string | null;
   address: string;
   intersection: string;
+  dv: string;
+  sec: string;
+  gd: string;
+  alias: string;
   latitude?: number;
   longitude?: number;
   client_id: string;
@@ -51,6 +56,7 @@ function normalize(raw: Record<string, unknown>, index: number): Call {
     type: text(raw.type, 'CALL'), call_type: text(raw.call_type ?? raw.callType, 'Unclassified'),
     incident_number: text(raw.incident_number ?? raw.incidentNumber, 'N/A'),
     vehicles: raw.vehicles as Call['vehicles'], address: text(raw.address), intersection: text(raw.intersection, ''),
+    dv: text(raw.dv, ''), sec: text(raw.sec, ''), gd: text(raw.gd, ''), alias: text(raw.alias, ''),
     latitude: Number(raw.latitude) || undefined, longitude: Number(raw.longitude) || undefined,
     client_id: text(raw.client_id ?? raw.clientId), station: text(raw.station),
     source: text(raw.source), text: text(raw.text, ''), raw
@@ -83,6 +89,11 @@ function formatTime(timestamp: string) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function dispatchSummary(call: Call) {
+  return [call.dv && `Dv ${call.dv}`, call.sec && `Sec ${call.sec}`, call.gd && `Gd ${call.gd}`, call.alias && `Alias ${call.alias}`]
+    .filter(Boolean).join(' · ');
+}
+
 function isRecent(timestamp: string, range: Range) {
   if (range === 'all') return true;
   const age = Date.now() - new Date(timestamp).getTime();
@@ -91,6 +102,7 @@ function isRecent(timestamp: string, range: Range) {
 
 export function OperatorDashboard() {
   const { token, user } = useAuth();
+  const isMobile = useIsMobile();
   const [calls, setCalls] = useState<Call[]>([]);
   const [pagerMessages, setPagerMessages] = useState<PagerMessage[]>([]);
   const [messagesError, setMessagesError] = useState('');
@@ -225,7 +237,23 @@ export function OperatorDashboard() {
     </section>
     <section className="calls-panel card"><div className="section-heading"><div><p className="eyebrow">Incident queue</p><h3>Calls</h3></div><span className="count-badge">{total || visible.length} total</span></div>
       <div className="call-filters"><label className="search-field"><span>⌕</span><input value={search} onChange={(event) => changeFilter(setSearch, event.target.value)} placeholder="Search incident, location, station…" aria-label="Search calls" /></label><select value={range} onChange={(event) => changeFilter((value) => setRange(value as Range), event.target.value)} aria-label="Time range"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="all">All available</option></select><select value={station} onChange={(event) => changeFilter(setStation, event.target.value)} aria-label="Station"><option value="all">All stations</option>{facets.stations.map((value) => <option key={value}>{value}</option>)}</select><select value={callType} onChange={(event) => changeFilter(setCallType, event.target.value)} aria-label="Call type"><option value="all">All call types</option>{facets.types.map((value) => <option key={value}>{value}</option>)}</select><button type="button" className="secondary-button" onClick={() => void load()}>Refresh</button></div>
-       {loading && calls.length === 0 ? <div className="skeleton-list" aria-label="Loading calls"><i /><i /><i /></div> : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Station</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong><AddressLink address={call.address} intersection={call.intersection} /></strong>{call.intersection && <small>{call.intersection}</small>}</td><td><span className="station-badge">{call.station}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
+      {loading && calls.length === 0 ? <div className="skeleton-list" aria-label="Loading calls"><i /><i /><i /></div> : isMobile ? (
+        <ul className="call-cards" aria-label="Calls">
+          {visible.length ? visible.map((call) => (
+            <li key={call.id}>
+              <button type="button" className="call-card" onClick={() => setSelected(call)}>
+                <span className="call-card-head">
+                  <span className="call-status">{call.call_type}</span>
+                  <strong className="incident-text">#{call.incident_number}</strong>
+                  <span className="time-text">{formatTime(call.timestamp)}</span>
+                </span>
+                <span className="call-card-loc"><strong><AddressLink address={call.address} intersection={call.intersection} /></strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</span>
+                <span className="call-card-foot"><span className="station-badge">{call.station}</span><span className="client-text">{vehicles(call.vehicles).slice(0, 3).join(', ') || 'No units'}</span></span>
+              </button>
+            </li>
+          )) : <li className="empty-state">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</li>}
+        </ul>
+       ) : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Station</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong><AddressLink address={call.address} intersection={call.intersection} /></strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</td><td><span className="station-badge">{call.station}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
        <div className="pagination"><span>Showing {visible.length ? ((page - 1) * PAGE_SIZE) + 1 : 0}–{Math.min((page - 1) * PAGE_SIZE + visible.length, (serverMode ? total || page * PAGE_SIZE : calls.length))} {serverMode && !total ? '' : `of ${serverMode ? total : calls.length}`}</span><div><button type="button" className="secondary-button" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page}{serverMode && !total ? '' : ` / ${pages}`}</span><button type="button" className="secondary-button" disabled={serverMode ? !cursors[page + 1] : page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>
     </section>
     <section className="calls-panel card"><div className="section-heading"><div><p className="eyebrow">Decoded receiver traffic</p><h3>Pager messages</h3><p className="operator-subtitle">Latest decoded pages received by FirePager.</p></div><span className="count-badge">{pagerMessages.length}</span></div>
@@ -234,6 +262,7 @@ export function OperatorDashboard() {
         {pagerMessages.length ? pagerMessages.map((message) => <tr key={message.id}><td className="time-text">{formatTime(message.timestamp)}</td><td><span className="call-status">{message.type || 'MESSAGE'}</span></td><td><div>{message.text || message.raw_text || '—'}</div>{message.raw_text && <details className="raw-page-details"><summary>View decoded page</summary><pre className="content-text">{message.raw_text}</pre></details>}</td><td className="client-text">{message.client_id || '—'}</td>{user?.role === 'admin' && <td><button type="button" className="danger-btn danger-btn-small" onClick={() => void deletePagerMessage(message)} disabled={deletingMessageId !== null}>{deletingMessageId === message.id ? 'Deleting...' : 'Delete'}</button></td>}</tr>) : <tr><td colSpan={user?.role === 'admin' ? 5 : 4} className="empty-table">{messagesError ? 'Unable to display pager messages.' : 'No decoded pager messages received yet.'}</td></tr>}
       </tbody></table></div>
     </section>
-     {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Location</dt><dd><AddressLink address={selected.address} intersection={selected.intersection} /></dd></div><div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
+     {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Address</dt><dd><AddressLink address={selected.address} intersection={selected.intersection} /></dd></div>{selected.intersection && <div><dt>Intersection</dt><dd>{selected.intersection}</dd></div>}{selected.dv && <div><dt>Division (Dv)</dt><dd>{selected.dv}</dd></div>}{selected.sec && <div><dt>Section (Sec)</dt><dd>{selected.sec}</dd></div>}{selected.gd && <div><dt>Grid (Gd)</dt><dd>{selected.gd}</dd></div>}{selected.alias && <div><dt>Alias</dt><dd>{selected.alias}</dd></div>}<div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
+
   </div>;
 }

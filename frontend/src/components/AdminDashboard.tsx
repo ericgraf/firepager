@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { BarChart } from './BarChart';
 import './components.css';
 
@@ -105,12 +106,68 @@ interface ReceiverStatus {
   observed_at: string;
 }
 
+interface WaterfallRow {
+  captured_at: string;
+  power_db: number[];
+}
+
+interface WaterfallSnapshot {
+  receiver_id: string;
+  captured_at: string;
+  start_hz: number;
+  step_hz: number;
+  rows: WaterfallRow[];
+}
+
+function WaterfallCanvas({ snapshot }: { snapshot: WaterfallSnapshot }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || snapshot.rows.length === 0) return;
+    const bins = Math.min(...snapshot.rows.map((row) => row.power_db.length));
+    const height = snapshot.rows.length;
+    if (bins < 2 || height < 1) return;
+    canvas.width = bins;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const values = snapshot.rows.flatMap((row) => row.power_db.slice(0, bins));
+    const sorted = [...values].sort((a, b) => a - b);
+    const low = sorted[Math.floor(sorted.length * 0.05)] ?? -100;
+    const high = sorted[Math.floor(sorted.length * 0.995)] ?? low + 1;
+    const range = Math.max(1, high - low);
+    const image = context.createImageData(bins, height);
+    snapshot.rows.forEach((row, y) => row.power_db.slice(0, bins).forEach((power, x) => {
+      const t = Math.max(0, Math.min(1, (power - low) / range));
+      const red = Math.round(255 * Math.max(0, Math.min(1, (t - 0.55) * 2.2)));
+      const green = Math.round(220 * Math.max(0, Math.min(1, (t - 0.18) * 1.7)));
+      const blue = Math.round(255 * Math.max(0, 1 - t * 1.25));
+      const offset = (y * bins + x) * 4;
+      image.data[offset] = red;
+      image.data[offset + 1] = green;
+      image.data[offset + 2] = blue;
+      image.data[offset + 3] = 255;
+    }));
+    context.putImageData(image, 0, 0);
+  }, [snapshot]);
+
+  const highHz = snapshot.start_hz + snapshot.step_hz * snapshot.rows[0].power_db.length;
+  return <div className="receiver-waterfall-plot">
+    <canvas ref={canvasRef} aria-label={`Waterfall spectrum for ${snapshot.receiver_id}`} />
+    <div className="receiver-waterfall-axis"><span>{(snapshot.start_hz / 1e6).toFixed(3)} MHz</span><span>{((snapshot.start_hz + highHz) / 2e6).toFixed(3)} MHz</span><span>{(highHz / 1e6).toFixed(3)} MHz</span></div>
+  </div>;
+}
+
 export function AdminDashboard() {
+  const isMobile = useIsMobile();
   const [users, setUsers] = useState<User[]>([]);
   const [configs, setConfigs] = useState<Config[]>([]);
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
   const [receivers, setReceivers] = useState<ReceiverStatus[]>([]);
   const [receiverError, setReceiverError] = useState('');
+  const [waterfallSnapshots, setWaterfallSnapshots] = useState<WaterfallSnapshot[]>([]);
+  const [waterfallError, setWaterfallError] = useState('');
   const [draftConfigs, setDraftConfigs] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
@@ -164,13 +221,33 @@ export function AdminDashboard() {
     }
   }, [token]);
 
+  const fetchWaterfalls = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await fetch('/api/admin/receivers/host-sdr-0/waterfalls?limit=12', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('Unable to load receiver waterfalls');
+      const result = await response.json();
+      setWaterfallSnapshots(Array.isArray(result) ? result : result.snapshots || []);
+      setWaterfallError('');
+    } catch (err: unknown) {
+      setWaterfallError(err instanceof Error ? err.message : String(err));
+    }
+  }, [token]);
+
   useEffect(() => {
     if (!token) return;
     fetchData();
     fetchReceivers();
+    fetchWaterfalls();
     const timer = window.setInterval(fetchReceivers, 15000);
-    return () => window.clearInterval(timer);
-  }, [token, fetchData, fetchReceivers]);
+    const waterfallTimer = window.setInterval(fetchWaterfalls, 300000);
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(waterfallTimer);
+    };
+  }, [token, fetchData, fetchReceivers, fetchWaterfalls]);
 
   const handleRoleChange = async (userId: number, newRole: string) => {
     try {
@@ -338,32 +415,70 @@ export function AdminDashboard() {
           <button type="button" onClick={fetchReceivers}>Refresh receivers</button>
         </div>
         {receiverError && <div className="error">{receiverError}</div>}
-        <div className="table-container">
-          <table>
-            <thead><tr>
-              <th>Receiver / Channel</th><th>Host / Device</th><th>Role</th><th>Status</th>
-              <th>Nominal / Current Frequency</th><th>Configured Gain / PPM</th><th>Description</th><th>Last report</th>
-            </tr></thead>
-            <tbody>
-              {receivers.length ? receivers.map((receiver) => (
-                <tr key={receiver.receiver_id}>
-                  <td><strong>{receiver.receiver_id}</strong><br />{receiver.channel_name || '—'}</td>
-                  <td>{receiver.host || '—'}<br /><span className="small-text">{receiver.device_identifier || '—'}</span></td>
-                  <td>{receiver.role}</td>
-                  <td><span className={`badge receiver-status-${receiver.status}`}>
+        {isMobile ? (
+          <ul className="receiver-cards">
+            {receivers.length ? receivers.map((receiver) => (
+              <li key={receiver.receiver_id} className="receiver-card">
+                <div className="receiver-card-head">
+                  <strong>{receiver.receiver_id}</strong>
+                  <span className={`badge receiver-status-${receiver.status}`}>
                     {receiver.status === 'stale' ? 'stale' : receiver.active_detector ? 'detector (active)' : receiver.status}
-                  </span></td>
-                  <td>{receiver.nominal_frequency_hz == null ? '—' : `${(receiver.nominal_frequency_hz / 1e6).toFixed(6)} MHz`}<br />
-                    <span className="small-text">Now: {receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</span></td>
-                  <td>Config: {receiver.configured_gain_db == null ? '—' : `${receiver.configured_gain_db} dB`} / {receiver.configured_ppm == null ? '—' : `${receiver.configured_ppm} ppm`}<br />
-                    <span className="small-text">Now: {receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</span></td>
-                  <td>{receiver.description || '—'}</td>
-                  <td>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</td>
-                </tr>
-              )) : <tr><td colSpan={8} className="empty-table">No receiver reports received yet.</td></tr>}
-            </tbody>
-          </table>
+                  </span>
+                </div>
+                <dl className="receiver-card-detail">
+                  <div><dt>Role</dt><dd>{receiver.role || '—'}</dd></div>
+                  <div><dt>Freq now</dt><dd>{receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</dd></div>
+                  <div><dt>Gain / PPM</dt><dd>{receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</dd></div>
+                  <div><dt>Reported</dt><dd>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</dd></div>
+                </dl>
+              </li>
+            )) : <li className="empty-state">No receiver reports received yet.</li>}
+          </ul>
+        ) : (
+          <div className="table-container">
+            <table>
+              <thead><tr>
+                <th>Receiver / Channel</th><th>Host / Device</th><th>Role</th><th>Status</th>
+                <th>Nominal / Current Frequency</th><th>Configured Gain / PPM</th><th>Description</th><th>Last report</th>
+              </tr></thead>
+              <tbody>
+                {receivers.length ? receivers.map((receiver) => (
+                  <tr key={receiver.receiver_id}>
+                    <td><strong>{receiver.receiver_id}</strong><br />{receiver.channel_name || '—'}</td>
+                    <td>{receiver.host || '—'}<br /><span className="small-text">{receiver.device_identifier || '—'}</span></td>
+                    <td>{receiver.role}</td>
+                    <td><span className={`badge receiver-status-${receiver.status}`}>
+                      {receiver.status === 'stale' ? 'stale' : receiver.active_detector ? 'detector (active)' : receiver.status}
+                    </span></td>
+                    <td>{receiver.nominal_frequency_hz == null ? '—' : `${(receiver.nominal_frequency_hz / 1e6).toFixed(6)} MHz`}<br />
+                      <span className="small-text">Now: {receiver.frequency_hz == null ? '—' : `${(receiver.frequency_hz / 1e6).toFixed(6)} MHz`}</span></td>
+                    <td>Config: {receiver.configured_gain_db == null ? '—' : `${receiver.configured_gain_db} dB`} / {receiver.configured_ppm == null ? '—' : `${receiver.configured_ppm} ppm`}<br />
+                      <span className="small-text">Now: {receiver.gain_db == null ? '—' : `${receiver.gain_db} dB`} / {receiver.ppm == null ? '—' : `${receiver.ppm} ppm`}</span></td>
+                    <td>{receiver.description || '—'}</td>
+                    <td>{Number.isNaN(Date.parse(receiver.observed_at)) ? '—' : new Date(receiver.observed_at).toLocaleTimeString()}</td>
+                  </tr>
+                )) : <tr><td colSpan={8} className="empty-table">No receiver reports received yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="admin-section card receiver-waterfall">
+        <div className="card-header">
+          <div>
+            <h2>Host SDR 0 Waterfall</h2>
+            <p className="small-text">Spectrum-only Host SDR 0 · snapshots every 5 minutes · refreshed automatically</p>
+          </div>
+          <button type="button" onClick={fetchWaterfalls}>Refresh waterfall</button>
         </div>
+        {waterfallError && <div className="error">{waterfallError}</div>}
+        {waterfallSnapshots.length > 0 ? (
+          <>
+            <p className="small-text">Latest capture: {new Date(waterfallSnapshots[0].captured_at).toLocaleString()} · {waterfallSnapshots[0].rows.length} time rows · {waterfallSnapshots[0].rows[0]?.power_db.length ?? 0} frequency bins</p>
+            <WaterfallCanvas snapshot={waterfallSnapshots[0]} />
+          </>
+        ) : !waterfallError ? <p className="empty-state">Waiting for the first measured Pi spectrum snapshot.</p> : null}
       </section>
 
       <section className="admin-grid">
@@ -430,47 +545,74 @@ export function AdminDashboard() {
           />
         </div>
 
-        <div className="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Invited By</th>
-                <th>Role</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredUsers.length > 0 ? filteredUsers.map((user) => (
-                <tr key={user.id}>
-                  <td>{user.name}</td>
-                  <td>{user.email}</td>
-                  <td>{user.invited_by_name || 'Self-created / seed'}</td>
-                  <td>
-                    <span className={`badge ${user.role === 'admin' ? 'role-admin' : ''}`}>
-                      {user.role}
-                    </span>
-                  </td>
-                  <td>
-                    <select
-                      value={user.role}
-                      onChange={(event) => handleRoleChange(user.id, event.target.value)}
-                      className="role-select"
-                    >
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  </td>
-                </tr>
-              )) : (
+        {isMobile ? (
+          <ul className="user-cards">
+            {filteredUsers.length > 0 ? filteredUsers.map((user) => (
+              <li key={user.id} className="user-card">
+                <div className="user-card-head">
+                  <strong>{user.name}</strong>
+                  <span className={`badge ${user.role === 'admin' ? 'role-admin' : ''}`}>{user.role}</span>
+                </div>
+                <p className="user-card-email">{user.email}</p>
+                <p className="small-text">{user.invited_by_name || 'Self-created / seed'}</p>
+                <label className="user-card-role">
+                  <span>Role</span>
+                  <select
+                    value={user.role}
+                    onChange={(event) => handleRoleChange(user.id, event.target.value)}
+                    className="role-select"
+                    aria-label={`Role for ${user.name}`}
+                  >
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+              </li>
+            )) : <li className="empty-state">No users match the current filter.</li>}
+          </ul>
+        ) : (
+          <div className="table-container">
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={5} className="empty-table">No users match the current filter.</td>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Invited By</th>
+                  <th>Role</th>
+                  <th>Actions</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {filteredUsers.length > 0 ? filteredUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td>{user.name}</td>
+                    <td>{user.email}</td>
+                    <td>{user.invited_by_name || 'Self-created / seed'}</td>
+                    <td>
+                      <span className={`badge ${user.role === 'admin' ? 'role-admin' : ''}`}>
+                        {user.role}
+                      </span>
+                    </td>
+                    <td>
+                      <select
+                        value={user.role}
+                        onChange={(event) => handleRoleChange(user.id, event.target.value)}
+                        className="role-select"
+                      >
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={5} className="empty-table">No users match the current filter.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       <section className="admin-section card">
