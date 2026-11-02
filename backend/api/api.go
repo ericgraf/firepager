@@ -219,7 +219,11 @@ func getMessages(c *gin.Context) {
 	}
 	page, err := db.GetMessagesPage(query)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if strings.HasPrefix(err.Error(), "invalid message cursor:") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, page)
