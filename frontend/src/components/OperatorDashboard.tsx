@@ -12,6 +12,10 @@ type Call = {
   vehicles: string[] | string | null;
   address: string;
   intersection: string;
+  dv: string;
+  sec: string;
+  gd: string;
+  alias: string;
   latitude?: number;
   longitude?: number;
   client_id: string;
@@ -43,6 +47,7 @@ function normalize(raw: Record<string, unknown>, index: number): Call {
     type: text(raw.type, 'CALL'), call_type: text(raw.call_type ?? raw.callType, 'Unclassified'),
     incident_number: text(raw.incident_number ?? raw.incidentNumber, 'N/A'),
     vehicles: raw.vehicles as Call['vehicles'], address: text(raw.address), intersection: text(raw.intersection, ''),
+    dv: text(raw.dv, ''), sec: text(raw.sec, ''), gd: text(raw.gd, ''), alias: text(raw.alias, ''),
     latitude: Number(raw.latitude) || undefined, longitude: Number(raw.longitude) || undefined,
     client_id: text(raw.client_id ?? raw.clientId), station: text(raw.station),
     source: text(raw.source), text: text(raw.text, ''), raw
@@ -73,6 +78,11 @@ function queryFor(range: Range, search: string, station: string, type: string, c
 function formatTime(timestamp: string) {
   const date = new Date(timestamp);
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function dispatchSummary(call: Call) {
+  return [call.dv && `Dv ${call.dv}`, call.sec && `Sec ${call.sec}`, call.gd && `Gd ${call.gd}`, call.alias && `Alias ${call.alias}`]
+    .filter(Boolean).join(' · ');
 }
 
 function isRecent(timestamp: string, range: Range) {
@@ -188,15 +198,15 @@ export function OperatorDashboard() {
                   <strong className="incident-text">#{call.incident_number}</strong>
                   <span className="time-text">{formatTime(call.timestamp)}</span>
                 </span>
-                <span className="call-card-loc"><strong>{call.address}</strong>{call.intersection && <small>{call.intersection}</small>}</span>
+                <span className="call-card-loc"><strong>{call.address}</strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</span>
                 <span className="call-card-foot"><span className="station-badge">{call.station}</span><span className="client-text">{vehicles(call.vehicles).slice(0, 3).join(', ') || 'No units'}</span></span>
               </button>
             </li>
           )) : <li className="empty-state">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</li>}
         </ul>
-      ) : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Station</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong>{call.address}</strong>{call.intersection && <small>{call.intersection}</small>}</td><td><span className="station-badge">{call.station}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
+       ) : <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Incident</th><th>Call type</th><th>Location</th><th>Station</th><th>Units</th><th>Node</th></tr></thead><tbody>{visible.length ? visible.map((call) => <tr key={call.id} onClick={() => setSelected(call)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') setSelected(call); }}><td className="time-text">{formatTime(call.timestamp)}</td><td><strong className="incident-text">#{call.incident_number}</strong></td><td><span className="call-status">{call.call_type}</span></td><td><strong>{call.address}</strong>{call.intersection && <small>{call.intersection}</small>}{dispatchSummary(call) && <small>{dispatchSummary(call)}</small>}</td><td><span className="station-badge">{call.station}</span></td><td>{vehicles(call.vehicles).slice(0, 3).join(', ') || '—'}</td><td className="client-text">{call.client_id}</td></tr>) : <tr><td colSpan={7} className="empty-table">{error ? 'Unable to display calls.' : 'No calls match these filters.'}</td></tr>}</tbody></table></div>}
        <div className="pagination"><span>Showing {visible.length ? ((page - 1) * PAGE_SIZE) + 1 : 0}–{Math.min((page - 1) * PAGE_SIZE + visible.length, (serverMode ? total || page * PAGE_SIZE : calls.length))} {serverMode && !total ? '' : `of ${serverMode ? total : calls.length}`}</span><div><button type="button" className="secondary-button" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page}{serverMode && !total ? '' : ` / ${pages}`}</span><button type="button" className="secondary-button" disabled={serverMode ? !cursors[page + 1] : page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>
     </section>
-    {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Location</dt><dd>{selected.address}{selected.intersection && ` · ${selected.intersection}`}</dd></div><div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
+     {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Address</dt><dd>{selected.address}</dd></div>{selected.intersection && <div><dt>Intersection</dt><dd>{selected.intersection}</dd></div>}{selected.dv && <div><dt>Division (Dv)</dt><dd>{selected.dv}</dd></div>}{selected.sec && <div><dt>Section (Sec)</dt><dd>{selected.sec}</dd></div>}{selected.gd && <div><dt>Grid (Gd)</dt><dd>{selected.gd}</dd></div>}{selected.alias && <div><dt>Alias</dt><dd>{selected.alias}</dd></div>}<div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
   </div>;
 }
