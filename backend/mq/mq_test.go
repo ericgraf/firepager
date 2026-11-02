@@ -48,7 +48,7 @@ func TestMessageDecoding(t *testing.T) {
 				IncidentNumber: "36719",
 				Vehicles:       []string{"PT91", "PT93", "P92", "LA91", "TA92", "TA94", "TA83", "SC90"},
 				Address:        "6525 BANK ST",
-				Intersection:   "CENOTE RD & STONE SCHOOL RD PT91 PT93 P92 LA91 TA92 TA94",
+				Intersection:   "CENOTE RD & STONE SCHOOL RD",
 				Source:         "930032",
 				Station:        "91,93,92,94,83,90",
 			},
@@ -91,6 +91,36 @@ func TestMessageDecoding(t *testing.T) {
 				Station:        "91,83,10",
 			},
 		},
+		{
+			name: "Flattened page 114676: smoke inside-fire",
+			rawJSON: `{"raw_text":"POCSAG512: Address:    1136  Function: 2  Alpha:   SMOKE VISIBLE INSIDE-FIRE  16:52:23 8472 FRANKTOWN RD  Dv: 8  Sec: 82G  Gd: V33 SKEEL CRT & DWYER HILL RD/Alias:10 HWY P82 P81 P46 T46 TA82 TA81 PT81 SC60 #114676 Sent by: FDP1<NUL>"}`,
+			expected: models.Message{
+				Type: "CALL", CallType: "SMOKE VISIBLE INSIDE-FIRE", IncidentNumber: "114676",
+				Vehicles: []string{"P82", "P81", "P46", "T46", "TA82", "TA81", "PT81", "SC60"},
+				Address: "8472 FRANKTOWN RD", Intersection: "SKEEL CRT & DWYER HILL RD/Alias:10 HWY",
+				Source: "1136", Station: "82,81,46,60",
+			},
+		},
+		{
+			name: "Flattened page 114660: commercial alarm",
+			rawJSON: `{"raw_text":"POCSAG512: Address:    1024  Function: 2  Alpha:   ALARM-COMMERCIAL/HR/MULTI RES/CHURCH/HOSP/SCHOOL  15:27:32 A-10 YORK ST  Dv: 1  Sec: 13E  Gd: BE53 SUSSEX DR & BY WARD MARKET SQ P13A P57 T13 DC50 #114660 Sent by: FDP1"}`,
+			expected: models.Message{
+				Type: "CALL", CallType: "ALARM-COMMERCIAL/HR/MULTI RES/CHURCH/HOSP/SCHOOL", IncidentNumber: "114660",
+				Vehicles: []string{"P13A", "P57", "T13", "DC50"},
+				Address: "A-10 YORK ST", Intersection: "SUSSEX DR & BY WARD MARKET SQ",
+				Source: "1024", Station: "13,57,50",
+			},
+		},
+		{
+			name: "Flattened page 114639: commercial alarm",
+			rawJSON: `{"raw_text":"POCSAG512: Address:    1024  Function: 2  Alpha:   ALARM-COMMERCIAL/HR/MULTI RES/CHURCH/HOSP/SCHOOL  13:47:03 400 INLET PRIV  Dv: 5  Sec: 53E  Gd: BM69 JEANNE DARC BLVD N P53 P55 LA53 DC50 #114639 Sent by: FDP1<NUL>"}`,
+			expected: models.Message{
+				Type: "CALL", CallType: "ALARM-COMMERCIAL/HR/MULTI RES/CHURCH/HOSP/SCHOOL", IncidentNumber: "114639",
+				Vehicles: []string{"P53", "P55", "LA53", "DC50"},
+				Address: "400 INLET PRIV", Intersection: "JEANNE DARC BLVD N",
+				Source: "1024", Station: "53,55,50",
+			},
+		},
 	}
 
 	for _, s := range samples {
@@ -125,6 +155,9 @@ func TestMessageDecoding(t *testing.T) {
 			}
 			if msg.Address != s.expected.Address {
 				t.Errorf("Expected Address %s, got %s", s.expected.Address, msg.Address)
+			}
+			if msg.Intersection != s.expected.Intersection {
+				t.Errorf("Expected Intersection %s, got %s", s.expected.Intersection, msg.Intersection)
 			}
 			if msg.Source != s.expected.Source {
 				t.Errorf("Expected source %s, got %s", s.expected.Source, msg.Source)

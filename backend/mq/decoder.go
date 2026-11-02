@@ -11,7 +11,12 @@ import (
 var (
 	pocsagRegex   = regexp.MustCompile(`POCSAG\d+: Address:\s+(\d+)\s+Function: (\d)\s+Alpha:\s+(.*)`)
 	incidentRegex = regexp.MustCompile(`#(\d+)`)
-	vehicleTypes  = []string{"PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "P"}
+	vehicleTypes  = []string{"PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "T", "P"}
+	pageIDRegex   = regexp.MustCompile(`ID:([A-Za-z0-9]+)`)
+	timeRegex     = regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}\b`)
+	dispatchRegex = regexp.MustCompile(`\s+(?:Dv|Dt):`)
+	vehicleRegex  = regexp.MustCompile(`(?i)\b(?:PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
+	gridCodeRegex = regexp.MustCompile(`(?i)^([A-Z]{0,2}\d{1,2}[A-Z]?)\s*(.*)$`)
 )
 
 func decodeMessage(m *models.Message) {
@@ -46,6 +51,9 @@ func decodeMessage(m *models.Message) {
 	if strings.Contains(cleanLine, "#") && strings.Contains(cleanLine, "Gd:") {
 		m.Type = "CALL"
 		parts := strings.Split(cleanLine, "<LF>")
+		if len(parts) == 1 {
+			parts = splitFlattenedCall(cleanLine)
+		}
 
 		// Page ID
 		if strings.Contains(parts[0], "ID:") {
@@ -79,6 +87,66 @@ func decodeMessage(m *models.Message) {
 			m.PageID = strings.TrimSpace(strings.Split(parts[0], "ID:")[1])
 		}
 		m.Text = strings.Join(parts, " ")
+	}
+}
+
+// splitFlattenedCall reconstructs the semantic lines from real decoder output
+// that has lost its <LF> markers. The timestamp, Dv/Dt, Gd, vehicle tokens and
+// incident marker are explicit delimiters in the dispatch format.
+func splitFlattenedCall(payload string) []string {
+	timeLoc := timeRegex.FindStringIndex(payload)
+	if timeLoc == nil {
+		return []string{payload}
+	}
+	metaLoc := dispatchRegex.FindStringIndex(payload[timeLoc[1]:])
+	if metaLoc == nil {
+		return []string{payload}
+	}
+	metaStart := timeLoc[1] + metaLoc[0]
+	gdOffset := strings.Index(payload[metaStart:], "Gd:")
+	if gdOffset < 0 {
+		return []string{payload}
+	}
+	gdStart := metaStart + gdOffset
+	gridAndLocation := strings.TrimSpace(payload[gdStart+len("Gd:"):])
+	vehicleLoc := vehicleRegex.FindStringIndex(gridAndLocation)
+	locationText := gridAndLocation
+	vehicleAndIncident := ""
+	if vehicleLoc != nil {
+		locationText = strings.TrimSpace(gridAndLocation[:vehicleLoc[0]])
+		vehicleAndIncident = strings.TrimSpace(gridAndLocation[vehicleLoc[0]:])
+	}
+
+	gridCode := ""
+	if match := gridCodeRegex.FindStringSubmatch(locationText); len(match) == 3 {
+		gridCode = match[1]
+		locationText = strings.TrimSpace(match[2])
+	}
+
+	vehicleText := vehicleAndIncident
+	incidentText := ""
+	if hash := strings.Index(vehicleAndIncident, "#"); hash >= 0 {
+		vehicleText = strings.TrimSpace(vehicleAndIncident[:hash])
+		incidentText = strings.TrimSpace(vehicleAndIncident[hash:])
+	}
+
+	callType := strings.TrimSpace(payload[:timeLoc[0]])
+	pagePrefix := ""
+	if id := pageIDRegex.FindString(callType); id != "" {
+		pagePrefix = id
+		callType = strings.TrimSpace(strings.Replace(callType, id, "", 1))
+	}
+	address := strings.TrimSpace(payload[timeLoc[1]:metaStart])
+	metadata := strings.TrimSpace(payload[metaStart:gdStart])
+	return []string{
+		pagePrefix,
+		callType,
+		payload[timeLoc[0]:timeLoc[1]],
+		strings.TrimSpace(address + " " + metadata),
+		"Gd: " + gridCode,
+		locationText,
+		vehicleText,
+		incidentText,
 	}
 }
 
@@ -199,6 +267,9 @@ func extractLocations(parts []string) (string, string) {
 	if gdIdx != -1 {
 		interParts := []string{}
 		for i := gdIdx + 1; i < len(parts)-2; i++ {
+			if strings.Contains(parts[i], "#") || isVehicleLine(parts[i]) {
+				break
+			}
 			interParts = append(interParts, parts[i])
 		}
 		intersection = strings.Join(interParts, " ")
