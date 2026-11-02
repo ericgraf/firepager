@@ -93,6 +93,7 @@ export function OperatorDashboard() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [pagerMessages, setPagerMessages] = useState<PagerMessage[]>([]);
   const [messagesError, setMessagesError] = useState('');
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [range, setRange] = useState<Range>('24h');
   const [station, setStation] = useState('all');
@@ -120,6 +121,25 @@ export function OperatorDashboard() {
       setMessagesError(err instanceof Error ? err.message : 'Unable to load pager messages');
     }
   }, [token]);
+
+  const deletePagerMessage = async (message: PagerMessage) => {
+    if (user?.role !== 'admin' || deletingMessageId) return;
+    if (!window.confirm(`Delete this pager message from the database? This cannot be undone.`)) return;
+    setDeletingMessageId(message.id);
+    try {
+      const response = await fetch(`/api/admin/messages/${encodeURIComponent(message.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error(`Unable to delete pager message (${response.status})`);
+      setPagerMessages((current) => current.filter((item) => item.id !== message.id));
+      setMessagesError('');
+    } catch (err) {
+      setMessagesError(err instanceof Error ? err.message : 'Unable to delete pager message');
+    } finally {
+      setDeletingMessageId(null);
+    }
+  };
 
   const load = useCallback(async (background = false) => {
     if (!token) return;
@@ -209,8 +229,8 @@ export function OperatorDashboard() {
     </section>
     <section className="calls-panel card"><div className="section-heading"><div><p className="eyebrow">Decoded receiver traffic</p><h3>Pager messages</h3><p className="operator-subtitle">Latest decoded pages received by FirePager.</p></div><span className="count-badge">{pagerMessages.length}</span></div>
       {messagesError && <div className="error operator-alert">{messagesError} <button type="button" onClick={() => void loadPagerMessages()}>Retry</button></div>}
-      <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Receiver</th></tr></thead><tbody>
-        {pagerMessages.length ? pagerMessages.map((message) => <tr key={message.id}><td className="time-text">{formatTime(message.timestamp)}</td><td><span className="call-status">{message.type || 'MESSAGE'}</span></td><td><div>{message.text || message.raw_text || '—'}</div>{message.raw_text && <details className="raw-page-details"><summary>View decoded page</summary><pre className="content-text">{message.raw_text}</pre></details>}</td><td className="client-text">{message.client_id || '—'}</td></tr>) : <tr><td colSpan={4} className="empty-table">{messagesError ? 'Unable to display pager messages.' : 'No decoded pager messages received yet.'}</td></tr>}
+      <div className="table-container operator-table-wrap"><table className="operator-table"><thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Receiver</th>{user?.role === 'admin' && <th>Actions</th>}</tr></thead><tbody>
+        {pagerMessages.length ? pagerMessages.map((message) => <tr key={message.id}><td className="time-text">{formatTime(message.timestamp)}</td><td><span className="call-status">{message.type || 'MESSAGE'}</span></td><td><div>{message.text || message.raw_text || '—'}</div>{message.raw_text && <details className="raw-page-details"><summary>View decoded page</summary><pre className="content-text">{message.raw_text}</pre></details>}</td><td className="client-text">{message.client_id || '—'}</td>{user?.role === 'admin' && <td><button type="button" className="danger-btn danger-btn-small" onClick={() => void deletePagerMessage(message)} disabled={deletingMessageId !== null}>{deletingMessageId === message.id ? 'Deleting...' : 'Delete'}</button></td>}</tr>) : <tr><td colSpan={user?.role === 'admin' ? 5 : 4} className="empty-table">{messagesError ? 'Unable to display pager messages.' : 'No decoded pager messages received yet.'}</td></tr>}
       </tbody></table></div>
     </section>
     {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Location</dt><dd>{selected.address}{selected.intersection && ` · ${selected.intersection}`}</dd></div><div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
