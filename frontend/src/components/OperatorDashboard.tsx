@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { AddressLink } from './AddressLink';
+import { CallMap } from './CallMap';
 import { useIsMobile } from '../hooks/useIsMobile';
 import './components.css';
 
@@ -98,6 +99,93 @@ function isRecent(timestamp: string, range: Range) {
   if (range === 'all') return true;
   const age = Date.now() - new Date(timestamp).getTime();
   return age >= 0 && age <= (range === '24h' ? 1 : 7) * 86_400_000;
+}
+
+function CallDetailPage({ call, onBack }: { call: Call; onBack: () => void }) {
+  const assignedUnits = vehicles(call.vehicles);
+  const hasCoordinates = Number.isFinite(call.latitude) && Number.isFinite(call.longitude)
+    && call.latitude !== 0 && call.longitude !== 0;
+  const locationQuery = [call.address, call.intersection].filter(Boolean).join(', ');
+  const directions = new URL('https://www.google.com/maps/dir/');
+  directions.searchParams.set('api', '1');
+  directions.searchParams.set('destination', hasCoordinates
+    ? `${call.latitude},${call.longitude}`
+    : locationQuery);
+
+  return <main className="call-detail-page">
+    <div className="call-detail-topbar">
+      <button type="button" className="secondary-button" onClick={onBack}>← Back to calls</button>
+      <span className="small-text">Incident detail</span>
+    </div>
+    <header className="call-detail-hero">
+      <div>
+        <p className="eyebrow">{call.station !== '—' ? `${call.station} · ` : ''}{call.call_type}</p>
+        <h2>#{call.incident_number}</h2>
+        <p className="call-detail-reported">Reported {new Date(call.timestamp).toLocaleString()}</p>
+      </div>
+      <span className="call-status">{call.type}</span>
+    </header>
+
+    <div className="call-detail-grid">
+      <div className="call-detail-main">
+        <section className="call-location-card card">
+          <div className="section-heading">
+            <div><p className="eyebrow">Incident location</p><h3>Address</h3></div>
+          </div>
+          <h2 className="call-detail-address"><AddressLink address={call.address} intersection={call.intersection}>{call.address}</AddressLink></h2>
+          {call.intersection && <p className="call-detail-intersection">Near <strong>{call.intersection}</strong></p>}
+          <div className="call-location-actions">
+            <AddressLink className="secondary-button" address={call.address} intersection={call.intersection}>Open in Google Maps ↗</AddressLink>
+            {locationQuery && <a className="secondary-button" href={directions.toString()} target="_blank" rel="noopener noreferrer">Directions ↗</a>}
+          </div>
+          <div className="call-detail-map">
+            {hasCoordinates
+              ? <CallMap lat={call.latitude!} lng={call.longitude!} address={call.address} callType={call.call_type} incidentNumber={call.incident_number} />
+              : <div className="map-placeholder"><p>No verified map coordinates are recorded for this call.</p><p className="small-text">Use the address link to search this location.</p></div>}
+          </div>
+          {hasCoordinates && <p className="call-coordinate-note">Recorded coordinates: {call.latitude!.toFixed(5)}, {call.longitude!.toFixed(5)}</p>}
+        </section>
+
+        <section className="card call-address-context">
+          <div className="section-heading"><div><p className="eyebrow">Location context</p><h3>Details associated with this address</h3></div></div>
+          <dl className="call-detail-facts">
+            {call.intersection && <div><dt>Intersection / cross street</dt><dd>{call.intersection}</dd></div>}
+            {call.alias && <div><dt>Location alias</dt><dd>{call.alias}</dd></div>}
+            {call.dv && <div><dt>Division</dt><dd>{call.dv}</dd></div>}
+            {call.sec && <div><dt>Section</dt><dd>{call.sec}</dd></div>}
+            {call.gd && <div><dt>Grid</dt><dd>{call.gd}</dd></div>}
+          </dl>
+          <p className="call-location-data-note">These are the location details included with the dispatch. Property, parcel, photo, listing, and site-plan records are not connected yet.</p>
+        </section>
+
+        {call.text && <section className="card call-dispatch-card">
+          <div className="section-heading"><div><p className="eyebrow">Source</p><h3>Dispatch message</h3></div></div>
+          <pre className="call-dispatch-text">{call.text}</pre>
+        </section>}
+      </div>
+
+      <aside className="call-detail-sidebar">
+        <section className="card">
+          <div className="section-heading"><div><p className="eyebrow">Response</p><h3>Assigned resources</h3></div></div>
+          <dl className="call-detail-facts">
+            <div><dt>Station</dt><dd>{text(call.station)}</dd></div>
+            <div><dt>Units</dt><dd>{assignedUnits.length ? assignedUnits.join(', ') : 'No units listed'}</dd></div>
+            <div><dt>Receiving node</dt><dd>{text(call.client_id)}</dd></div>
+          </dl>
+        </section>
+        <section className="card">
+          <div className="section-heading"><div><p className="eyebrow">Call record</p><h3>Incident details</h3></div></div>
+          <dl className="call-detail-facts">
+            <div><dt>Call type</dt><dd>{call.call_type}</dd></div>
+            <div><dt>Incident number</dt><dd>#{call.incident_number}</dd></div>
+            <div><dt>Reported</dt><dd>{new Date(call.timestamp).toLocaleString()}</dd></div>
+            <div><dt>Message type</dt><dd>{text(call.type)}</dd></div>
+            {call.source && <div><dt>Source</dt><dd>{call.source}</dd></div>}
+          </dl>
+        </section>
+      </aside>
+    </div>
+  </main>;
 }
 
 export function OperatorDashboard() {
@@ -219,6 +307,8 @@ export function OperatorDashboard() {
 
   const changeFilter = (setter: (value: string) => void, value: string) => { setter(value); setPage(1); setCursors({}); };
 
+  if (selected) return <div className="operator-shell"><CallDetailPage call={selected} onBack={() => setSelected(null)} /></div>;
+
   return <div className="operator-shell">
     <section className="operator-hero">
       <div><p className="eyebrow">Operations / live queue</p><h2>Operator console</h2><p className="operator-subtitle">Monitor incoming incidents and keep the response picture current.</p></div>
@@ -262,7 +352,5 @@ export function OperatorDashboard() {
         {pagerMessages.length ? pagerMessages.map((message) => <tr key={message.id}><td className="time-text">{formatTime(message.timestamp)}</td><td><span className="call-status">{message.type || 'MESSAGE'}</span></td><td><div>{message.text || message.raw_text || '—'}</div>{message.raw_text && <details className="raw-page-details"><summary>View decoded page</summary><pre className="content-text">{message.raw_text}</pre></details>}</td><td className="client-text">{message.client_id || '—'}</td>{user?.role === 'admin' && <td><button type="button" className="danger-btn danger-btn-small" onClick={() => void deletePagerMessage(message)} disabled={deletingMessageId !== null}>{deletingMessageId === message.id ? 'Deleting...' : 'Delete'}</button></td>}</tr>) : <tr><td colSpan={user?.role === 'admin' ? 5 : 4} className="empty-table">{messagesError ? 'Unable to display pager messages.' : 'No decoded pager messages received yet.'}</td></tr>}
       </tbody></table></div>
     </section>
-     {selected && <aside className="detail-drawer" role="dialog" aria-label="Call details"><div className="drawer-header"><div><p className="eyebrow">Incident detail</p><h3>#{selected.incident_number}</h3></div><button type="button" className="close-btn" onClick={() => setSelected(null)} aria-label="Close details">×</button></div><div className="drawer-body"><span className="call-status">{selected.call_type}</span><dl><div><dt>Reported</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div><div><dt>Address</dt><dd><AddressLink address={selected.address} intersection={selected.intersection} /></dd></div>{selected.intersection && <div><dt>Intersection</dt><dd>{selected.intersection}</dd></div>}{selected.dv && <div><dt>Division (Dv)</dt><dd>{selected.dv}</dd></div>}{selected.sec && <div><dt>Section (Sec)</dt><dd>{selected.sec}</dd></div>}{selected.gd && <div><dt>Grid (Gd)</dt><dd>{selected.gd}</dd></div>}{selected.alias && <div><dt>Alias</dt><dd>{selected.alias}</dd></div>}<div><dt>Station</dt><dd>{selected.station}</dd></div><div><dt>Units</dt><dd>{vehicles(selected.vehicles).join(', ') || 'No units listed'}</dd></div><div><dt>Node</dt><dd>{selected.client_id}</dd></div></dl>{selected.text && <div className="raw-message"><dt>Source message</dt><p>{selected.text}</p></div>}</div><div className="drawer-footer"><button type="button" className="secondary-button" onClick={() => setSelected(null)}>Close</button>{user?.role === 'admin' && <span className="small-text">Admin actions remain available in the legacy dashboard.</span>}</div></aside>}
-
   </div>;
 }

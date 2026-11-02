@@ -33,7 +33,7 @@ function RecenterMap({ lat, lng }: { lat: number, lng: number }) {
 
 export function CallMap({ lat, lng, address, callType, incidentNumber }: CallMapProps) {
   // If lat/lng are 0, it means it's not geocoded yet.
-  const hasCoordinates = lat !== 0 || lng !== 0;
+  const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0;
 
   if (!hasCoordinates) {
     return (
