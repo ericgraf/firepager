@@ -21,7 +21,7 @@ interface Message {
   latitude: number;
   longitude: number;
   client_id: string;
-  station: string;
+  stations: string[];
 }
 
 function extractVehicles(rawVehicles: string[] | string | null | undefined) {
@@ -219,7 +219,7 @@ export function MessageFeed({ selectedVehicles }: MessageFeedProps) {
                       onClick={() => setSelectedCall(msg)}
                     >
                       <td><span className="time-text">{new Date(msg.timestamp).toLocaleTimeString()}</span></td>
-                      <td><span className="station-badge">{msg.station ? `ST ${msg.station}` : '-'}</span></td>
+                      <td><span className="station-badges">{msg.stations?.length ? msg.stations.map((station) => <span className="station-badge" key={station}>ST {station}</span>) : '-'}</span></td>
                       <td><span className="incident-text">#{msg.incident_number || 'N/A'}</span></td>
                       <td><span className="call-type-text">{msg.call_type}</span></td>
                       <td>

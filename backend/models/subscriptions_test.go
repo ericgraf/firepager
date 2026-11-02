@@ -3,7 +3,7 @@ package models
 import "testing"
 
 func TestMatchesSubscriptionRule(t *testing.T) {
-	message := Message{Station: "12, 14", CallType: "Structure Fire"}
+	message := Message{Stations: []string{"12", "14"}, CallType: "Structure Fire"}
 	if !MatchesSubscriptionRule(message, SubscriptionRule{Station: "14", CallType: "structure fire", Enabled: true}) {
 		t.Fatal("expected matching station and call type")
 	}
@@ -26,7 +26,7 @@ func TestMatchesSubscriptionRuleUsesStationEntities(t *testing.T) {
 }
 
 func TestMatchesSubscription(t *testing.T) {
-	message := Message{Station: "12", CallType: "Medical"}
+	message := Message{Stations: []string{"12"}, CallType: "Medical"}
 	settings := SubscriptionSettings{Enabled: true, Rules: []SubscriptionRule{{CallType: "Medical", Enabled: true}}}
 	if !MatchesSubscription(message, settings) {
 		t.Fatal("expected subscription match")

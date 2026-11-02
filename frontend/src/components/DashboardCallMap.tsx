@@ -29,7 +29,7 @@ export interface DashboardCall {
   intersection: string;
   latitude: number;
   longitude: number;
-  station: string;
+  stations: string[];
   vehicles: string[];
 }
 
@@ -94,7 +94,7 @@ export function DashboardCallMap({ calls }: DashboardCallMapProps) {
                 #{call.incident_number || 'N/A'}<br />
                 <AddressLink address={call.address} intersection={call.intersection}>{call.address}</AddressLink><br />
                 {call.intersection ? `${call.intersection}` : null}
-                {call.station ? <><br />Station {call.station}</> : null}
+                {call.stations?.length ? <><br />Stations {call.stations.join(', ')}</> : null}
                 {formatVehicles(call.vehicles) ? <><br />{formatVehicles(call.vehicles)}</> : null}
               </Popup>
             </Marker>

@@ -51,8 +51,8 @@ func TestMessageDecoding(t *testing.T) {
 				Address:        "6525 BANK ST",
 				Intersection:   "CENOTE RD & STONE SCHOOL RD",
 				DV:             "9", Section: "91D", Grid: "91D",
-				Source:  "930032",
-				Station: "91,93,92,94,83,90", Stations: []string{"91", "93", "92", "94", "83", "90"},
+				Source:   "930032",
+				Stations: []string{"91", "93", "92", "94", "83", "90"},
 			},
 		},
 		{
@@ -71,8 +71,8 @@ func TestMessageDecoding(t *testing.T) {
 				Address:        "3168 DALMAC RD",
 				Intersection:   "FOREST RD & SPRINGHILL RD",
 				DV:             "9", Section: "92B", Grid: "92B",
-				Source:  "1296",
-				Station: "92,93,23,90", Stations: []string{"92", "93", "23", "90"},
+				Source:   "1296",
+				Stations: []string{"92", "93", "23", "90"},
 			},
 		},
 		{
@@ -91,8 +91,8 @@ func TestMessageDecoding(t *testing.T) {
 				Address:        "100 MAIN ST",
 				Intersection:   "FIRST ST & SECOND ST",
 				DV:             "9", Section: "91D", Grid: "91D",
-				Source:  "930032",
-				Station: "91,83,10", Stations: []string{"91", "83", "10"},
+				Source:   "930032",
+				Stations: []string{"91", "83", "10"},
 			},
 		},
 		{
@@ -103,7 +103,7 @@ func TestMessageDecoding(t *testing.T) {
 				Vehicles: []string{"P82", "P81", "P46", "T46", "TA82", "TA81", "PT81", "SC60"},
 				Address:  "8472 FRANKTOWN RD", Intersection: "SKEEL CRT & DWYER HILL RD",
 				DV: "8", Section: "82G", Grid: "V33", Alias: "10 HWY",
-				Source: "1136", Station: "82,81,46,60", Stations: []string{"82", "81", "46", "60"},
+				Source: "1136", Stations: []string{"82", "81", "46", "60"},
 			},
 		},
 		{
@@ -113,7 +113,7 @@ func TestMessageDecoding(t *testing.T) {
 				Type: "CALL", CallType: "ALARM-COMMERCIAL/HR/MULTI RES/CHURCH/HOSP/SCHOOL", IncidentNumber: "26-114660",
 				Vehicles: []string{"P13A", "P57", "T13", "DC50"},
 				Address:  "A-10 YORK ST", Intersection: "SUSSEX DR & BY WARD MARKET SQ",
-				Source: "1024", Station: "13,57,50", Stations: []string{"13", "57", "50"}, DV: "1", Section: "13E", Grid: "BE53",
+				Source: "1024", Stations: []string{"13", "57", "50"}, DV: "1", Section: "13E", Grid: "BE53",
 			},
 		},
 		{
@@ -123,7 +123,7 @@ func TestMessageDecoding(t *testing.T) {
 				Type: "CALL", CallType: "ALARM-COMMERCIAL/HR/MULTI RES/CHURCH/HOSP/SCHOOL", IncidentNumber: "26-114639",
 				Vehicles: []string{"P53", "P55", "LA53", "DC50"},
 				Address:  "400 INLET PRIV", Intersection: "JEANNE DARC BLVD N",
-				Source: "1024", Station: "53,55,50", Stations: []string{"53", "55", "50"}, DV: "5", Section: "53E", Grid: "BM69",
+				Source: "1024", Stations: []string{"53", "55", "50"}, DV: "5", Section: "53E", Grid: "BM69",
 			},
 		},
 	}
@@ -171,9 +171,6 @@ func TestMessageDecoding(t *testing.T) {
 			}
 			if msg.Source != s.expected.Source {
 				t.Errorf("Expected source %s, got %s", s.expected.Source, msg.Source)
-			}
-			if msg.Station != s.expected.Station {
-				t.Errorf("Expected station %s, got %s", s.expected.Station, msg.Station)
 			}
 			if !reflect.DeepEqual(msg.Stations, s.expected.Stations) {
 				t.Errorf("Expected stations %v, got %v", s.expected.Stations, msg.Stations)

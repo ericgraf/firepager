@@ -22,7 +22,6 @@ type Call = {
   latitude?: number;
   longitude?: number;
   client_id: string;
-  station: string;
   source?: string;
   text?: string;
   raw?: unknown;
@@ -51,8 +50,8 @@ function text(value: unknown, fallback = '—') {
   return value === null || value === undefined || String(value).trim() === '' ? fallback : String(value);
 }
 
-function stationCodes(value: unknown, legacyValue?: unknown) {
-  const source = Array.isArray(value) && value.length > 0 ? value : String(legacyValue ?? '').split(',');
+function stationCodes(value: unknown) {
+  const source = Array.isArray(value) ? value : [];
   return [...new Set(source.map(String).map((station) => station.trim()).filter(Boolean))];
 }
 
@@ -65,7 +64,7 @@ function normalize(raw: Record<string, unknown>, index: number): Call {
     vehicles: raw.vehicles as Call['vehicles'], address: text(raw.address), intersection: text(raw.intersection, ''),
     dv: text(raw.dv, ''), sec: text(raw.sec, ''), gd: text(raw.gd, ''), alias: text(raw.alias, ''),
     latitude: Number(raw.latitude) || undefined, longitude: Number(raw.longitude) || undefined,
-    client_id: text(raw.client_id ?? raw.clientId), station: text(raw.station), stations: stationCodes(raw.stations, raw.station),
+    client_id: text(raw.client_id ?? raw.clientId), stations: stationCodes(raw.stations),
     source: text(raw.source), text: text(raw.text, ''), raw
   };
 }

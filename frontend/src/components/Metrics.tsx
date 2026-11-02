@@ -55,7 +55,7 @@ function normalizeCall(raw: Record<string, unknown>, index: number): CallRecord 
     intersection: display(raw.intersection, ''),
     latitude: Number(raw.latitude),
     longitude: Number(raw.longitude),
-    station: display(raw.station, 'Unknown Station'),
+    stations: Array.isArray(raw.stations) ? raw.stations.map(String).map((station) => station.trim()).filter(Boolean) : [],
     vehicles: parseVehicles(raw.vehicles),
     client_id: display(raw.client_id, 'Unknown Receiver'),
     source: display(raw.source, ''),
@@ -193,21 +193,21 @@ export function Metrics() {
     return () => controller.abort();
   }, [token, timeRange, refreshKey]);
 
-  const stations = useMemo(() => countBy(calls.map((call) => call.station)), [calls]);
+  const stations = useMemo(() => countBy(calls.flatMap((call) => call.stations)), [calls]);
   const callTypes = useMemo(() => countBy(calls.map((call) => call.call_type)), [calls]);
   const allVehicles = useMemo(() => countBy(calls.flatMap((call) => call.vehicles.length ? call.vehicles : ['Unknown Vehicle'])), [calls]);
   const filteredCalls = useMemo(() => calls.filter((call) =>
-    (stationFilter === 'all' || call.station === stationFilter)
+    (stationFilter === 'all' || call.stations.includes(stationFilter))
     && (callTypeFilter === 'all' || call.call_type === callTypeFilter)
     && (!selectedVehicles.length || selectedVehicles.some((vehicle) => call.vehicles.includes(vehicle) || (!call.vehicles.length && vehicle === 'Unknown Vehicle')))
   ), [calls, stationFilter, callTypeFilter, selectedVehicles]);
 
   const counts = useMemo(() => ({
     incidents: new Set(filteredCalls.map((call) => call.incident_number === 'N/A' ? call.id : call.incident_number)).size,
-    stations: new Set(filteredCalls.map((call) => call.station)).size,
+    stations: new Set(filteredCalls.flatMap((call) => call.stations)).size,
     vehicleMentions: filteredCalls.reduce((sum, call) => sum + call.vehicles.length, 0),
     byType: countBy(filteredCalls.map((call) => call.call_type)),
-    byStation: countBy(filteredCalls.map((call) => call.station)).slice(0, 12),
+    byStation: countBy(filteredCalls.flatMap((call) => call.stations)).slice(0, 12),
     byVehicle: countBy(filteredCalls.flatMap((call) => call.vehicles.length ? call.vehicles : ['Unknown Vehicle'])).slice(0, 12),
   }), [filteredCalls]);
   const trend = useMemo(() => trendSeries(filteredCalls, timeRange), [filteredCalls, timeRange]);

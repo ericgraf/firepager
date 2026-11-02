@@ -76,17 +76,26 @@ func createSchema() {
 		alias TEXT,
 		latitude DOUBLE PRECISION,
 		longitude DOUBLE PRECISION,
-		client_id VARCHAR(100),
-		station VARCHAR(50)
+		client_id VARCHAR(100)
 	);
 	ALTER TABLE messages ADD COLUMN IF NOT EXISTS stations TEXT[] NOT NULL DEFAULT '{}';
-	UPDATE messages
-	SET stations = COALESCE((
-		SELECT array_agg(BTRIM(code) ORDER BY ordinal)
-		FROM unnest(string_to_array(COALESCE(station, ''), ',')) WITH ORDINALITY AS legacy(code, ordinal)
-		WHERE BTRIM(code) <> ''
-	), ARRAY[]::TEXT[])
-	WHERE COALESCE(cardinality(stations), 0) = 0 AND BTRIM(COALESCE(station, '')) <> '';
+	DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'station') THEN
+			UPDATE messages
+			SET stations = (
+				SELECT COALESCE(array_agg(code ORDER BY first_ordinal), ARRAY[]::TEXT[])
+				FROM (
+					SELECT BTRIM(code) AS code, MIN(ordinal) AS first_ordinal
+					FROM unnest(COALESCE(stations, ARRAY[]::TEXT[]) || string_to_array(COALESCE(station, ''), ','))
+						WITH ORDINALITY AS all_codes(code, ordinal)
+					WHERE BTRIM(code) <> ''
+					GROUP BY BTRIM(code)
+				) normalized
+			)
+			WHERE BTRIM(COALESCE(station, '')) <> '';
+			ALTER TABLE messages DROP COLUMN station;
+		END IF;
+	END $$;
 	CREATE TABLE IF NOT EXISTS receiver_status (
 		receiver_id VARCHAR(100) PRIMARY KEY,
 		host VARCHAR(255) NOT NULL DEFAULT '',
@@ -319,11 +328,23 @@ func createSchema() {
 	CREATE INDEX IF NOT EXISTS messages_type_timestamp_idx ON messages (type, timestamp DESC);
 	CREATE INDEX IF NOT EXISTS messages_client_timestamp_idx ON messages (client_id, timestamp DESC);
 	CREATE INDEX IF NOT EXISTS messages_call_type_timestamp_idx ON messages (call_type, timestamp DESC);
-	CREATE INDEX IF NOT EXISTS messages_station_timestamp_idx ON messages (station, timestamp DESC);
+	CREATE INDEX IF NOT EXISTS messages_stations_gin_idx ON messages USING GIN (stations);
 	`
-	_, err := DB.Exec(schema)
+	tx, err := DB.Begin()
 	if err != nil {
+		log.Fatalf("Error beginning schema migration: %v", err)
+	}
+	if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(740261903)`); err != nil {
+		_ = tx.Rollback()
+		log.Fatalf("Error locking schema migration: %v", err)
+	}
+	_, err = tx.Exec(schema)
+	if err != nil {
+		_ = tx.Rollback()
 		log.Fatalf("Error creating schema: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		log.Fatalf("Error committing schema migration: %v", err)
 	}
 	// Existing message dimensions become available to subscription clients on
 	// upgrade. New dimensions are also exposed by GetSubscriptionCatalogs.
@@ -332,7 +353,7 @@ func createSchema() {
 		WHERE call_type IS NOT NULL AND BTRIM(call_type) <> ''
 		ON CONFLICT (code) DO NOTHING`)
 	_, _ = DB.Exec(`INSERT INTO subscription_catalog_stations (code, label)
-		SELECT DISTINCT BTRIM(s), BTRIM(s) FROM messages, regexp_split_to_table(station, ',') AS s
+		SELECT DISTINCT BTRIM(s), BTRIM(s) FROM messages, unnest(stations) AS s
 		WHERE type = 'CALL' AND BTRIM(s) <> ''
 		ON CONFLICT (code) DO NOTHING`)
 
@@ -382,8 +403,8 @@ func seedAdminUser() {
 
 func SaveMessage(msg *models.Message) error {
 	query := `INSERT INTO messages (
-		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, stations, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id, station
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, ARRAY[]::TEXT[]), $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`
+		id, timestamp, source, text, raw_text, type, page_id, call_type, incident_number, vehicles, stations, address, intersection, dv, sec, gd, alias, latitude, longitude, client_id
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, ARRAY[]::TEXT[]), $12, $13, $14, $15, $16, $17, $18, $19, $20)`
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
@@ -393,7 +414,7 @@ func SaveMessage(msg *models.Message) error {
 		msg.ID, msg.Timestamp, msg.Source, msg.Text, msg.RawText, msg.Type,
 		msg.PageID, msg.CallType, msg.IncidentNumber, pq.Array(msg.Vehicles), pq.Array(msg.Stations),
 		msg.Address, msg.Intersection, msg.DV, msg.Section, msg.Grid, msg.Alias,
-		msg.Latitude, msg.Longitude, msg.ClientID, msg.Station)
+		msg.Latitude, msg.Longitude, msg.ClientID)
 	if err != nil {
 		return err
 	}
@@ -458,7 +479,7 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 	}
 	if q.Station != "" {
 		stationArg := arg(q.Station)
-		conditions = append(conditions, "(stations @> ARRAY["+stationArg+"]::TEXT[] OR EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE(station, ''), ',')) AS legacy(station_code) WHERE BTRIM(legacy.station_code) = "+stationArg+"))")
+		conditions = append(conditions, "stations @> ARRAY["+stationArg+"]::TEXT[]")
 	}
 	if q.CallType != "" {
 		conditions = append(conditions, "call_type = "+arg(q.CallType))
@@ -486,7 +507,7 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 		COALESCE(type, ''), COALESCE(page_id, ''), COALESCE(call_type, ''), COALESCE(incident_number, ''),
 		COALESCE(vehicles, ARRAY[]::TEXT[]), COALESCE(stations, ARRAY[]::TEXT[]), COALESCE(address, ''), COALESCE(intersection, ''),
 		COALESCE(dv, ''), COALESCE(sec, ''), COALESCE(gd, ''), COALESCE(alias, ''),
-		COALESCE(latitude, 0), COALESCE(longitude, 0), COALESCE(client_id, ''), COALESCE(station, '')
+		COALESCE(latitude, 0), COALESCE(longitude, 0), COALESCE(client_id, '')
 		FROM messages WHERE ` + strings.Join(conditions, " AND ") +
 		` ORDER BY timestamp DESC, id DESC LIMIT $` + fmt.Sprint(len(args))
 	rows, err := DB.Query(query, args...)
@@ -502,7 +523,7 @@ func GetMessagesPage(q MessageQuery) (*models.MessagePage, error) {
 			&m.ID, &m.Timestamp, &m.Source, &m.Text, &m.RawText, &m.Type,
 			&m.PageID, &m.CallType, &m.IncidentNumber, pq.Array(&m.Vehicles), pq.Array(&m.Stations),
 			&m.Address, &m.Intersection, &m.DV, &m.Section, &m.Grid, &m.Alias,
-			&m.Latitude, &m.Longitude, &m.ClientID, &m.Station,
+			&m.Latitude, &m.Longitude, &m.ClientID,
 		); err != nil {
 			return nil, err
 		}
@@ -999,7 +1020,7 @@ func GetMetricsFiltered(q MetricsQuery) (*models.Metrics, error) {
 	}
 	if q.Station != "" {
 		stationArg := add(q.Station)
-		conditions = append(conditions, "(stations @> ARRAY["+stationArg+"]::TEXT[] OR EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE(station, ''), ',')) AS legacy(station_code) WHERE BTRIM(legacy.station_code) = "+stationArg+"))")
+		conditions = append(conditions, "stations @> ARRAY["+stationArg+"]::TEXT[]")
 	}
 	if q.CallType != "" {
 		conditions = append(conditions, "call_type = "+add(q.CallType))
@@ -1058,8 +1079,8 @@ func GetMetricsFiltered(q MetricsQuery) (*models.Metrics, error) {
 	}
 
 	// By Station (Calls only)
-	stationWhere := where + " AND type = 'CALL' AND (COALESCE(cardinality(stations), 0) > 0 OR station <> '')"
-	rows, err = DB.Query("SELECT UNNEST(CASE WHEN COALESCE(cardinality(stations), 0) > 0 THEN stations ELSE string_to_array(COALESCE(station, ''), ',') END) FROM messages WHERE "+stationWhere, args...)
+	stationWhere := where + " AND type = 'CALL' AND COALESCE(cardinality(stations), 0) > 0"
+	rows, err = DB.Query("SELECT UNNEST(stations) FROM messages WHERE "+stationWhere, args...)
 	if err != nil {
 		return nil, err
 	}

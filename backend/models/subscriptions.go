@@ -9,11 +9,7 @@ func MatchesSubscriptionRule(message Message, rule SubscriptionRule) bool {
 		return false
 	}
 	stationMatch := strings.TrimSpace(rule.Station) == ""
-	stations := message.Stations
-	if len(stations) == 0 {
-		stations = strings.Split(message.Station, ",")
-	}
-	for _, station := range stations {
+	for _, station := range message.Stations {
 		if strings.EqualFold(strings.TrimSpace(station), strings.TrimSpace(rule.Station)) {
 			stationMatch = true
 		}

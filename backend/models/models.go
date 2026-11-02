@@ -23,7 +23,6 @@ type Message struct {
 	Latitude       float64   `json:"latitude"`
 	Longitude      float64   `json:"longitude"`
 	ClientID       string    `json:"client_id"`
-	Station        string    `json:"station"` // Deprecated comma-separated compatibility field; use Stations.
 }
 
 // MessagePage is returned by the paginated messages endpoint. Cursor is an

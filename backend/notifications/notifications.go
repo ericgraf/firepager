@@ -146,8 +146,8 @@ func sendConfiguredProvider(name, recipient string, user *models.User, msg *mode
 }
 
 func buildNotificationContent(msg *models.Message) string {
-	return fmt.Sprintf("Alert\nIncident: %s\nAddress: %s\nVehicles: %s\nStation: %s\n\n%s",
-		msg.IncidentNumber, msg.Address, formatVehicles(msg.Vehicles), msg.Station, msg.Text)
+	return fmt.Sprintf("Alert\nIncident: %s\nAddress: %s\nVehicles: %s\nStations: %s\n\n%s",
+		msg.IncidentNumber, msg.Address, formatVehicles(msg.Vehicles), strings.Join(msg.Stations, ", "), msg.Text)
 }
 
 func sendPushover(user *models.User, msg *models.Message) {
@@ -157,7 +157,7 @@ func sendPushover(user *models.User, msg *models.Message) {
 	}
 
 	title := fmt.Sprintf("[%s] %s", msg.CallType, msg.IncidentNumber)
-	message := fmt.Sprintf("%s\nVehicles: %s\nStation: %s\n\n%s", msg.Address, formatVehicles(msg.Vehicles), msg.Station, msg.Text)
+	message := fmt.Sprintf("%s\nVehicles: %s\nStations: %s\n\n%s", msg.Address, formatVehicles(msg.Vehicles), strings.Join(msg.Stations, ", "), msg.Text)
 
 	formData := url.Values{
 		"token":   {user.PushoverAppToken},
@@ -260,8 +260,8 @@ func buildSMSContent(msg *models.Message) string {
 	if vehicles := formatVehicles(msg.Vehicles); vehicles != "" {
 		parts = append(parts, "Vehicles: "+vehicles)
 	}
-	if msg.Station != "" {
-		parts = append(parts, "Station: "+msg.Station)
+	if len(msg.Stations) > 0 {
+		parts = append(parts, "Stations: "+strings.Join(msg.Stations, ", "))
 	}
 
 	content := "FIREPAGER ALERT"

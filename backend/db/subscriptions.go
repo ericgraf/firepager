@@ -83,7 +83,7 @@ func GetSubscriptionCatalogs() (map[string][]models.CatalogEntry, error) {
 	result := map[string][]models.CatalogEntry{"stations": {}, "call_types": {}}
 	rows, err := DB.Query(`SELECT code, label FROM (
 		SELECT code, label FROM subscription_catalog_stations WHERE is_active
-		UNION SELECT DISTINCT BTRIM(s), BTRIM(s) FROM messages, regexp_split_to_table(station, ',') AS s WHERE type = 'CALL' AND BTRIM(s) <> ''
+		UNION SELECT DISTINCT BTRIM(s), BTRIM(s) FROM messages, unnest(stations) AS s WHERE type = 'CALL' AND BTRIM(s) <> ''
 	) catalog ORDER BY code`)
 	if err != nil {
 		return nil, err
