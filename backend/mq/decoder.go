@@ -11,11 +11,11 @@ import (
 var (
 	pocsagRegex     = regexp.MustCompile(`POCSAG\d+: Address:\s+(\d+)\s+Function: (\d)\s+Alpha:\s+(.*)`)
 	incidentRegex   = regexp.MustCompile(`#(\d+)`)
-	vehicleTypes    = []string{"PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "T", "P"}
+	vehicleTypes    = []string{"UTV", "PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "T", "P"}
 	pageIDRegex     = regexp.MustCompile(`ID:([A-Za-z0-9]+)`)
 	timeRegex       = regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}\b`)
 	dispatchRegex   = regexp.MustCompile(`\s+(?:Dv|Dt):`)
-	vehicleRegex    = regexp.MustCompile(`(?i)\b(?:PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
+	vehicleRegex    = regexp.MustCompile(`(?i)\b(?:UTV|PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
 	gridCodeRegex   = regexp.MustCompile(`(?i)^([A-Z]{0,2}\d{1,2}[A-Z]?)\s*(.*)$`)
 	dvRegex         = regexp.MustCompile(`(?i)\bDv:\s*([^\s<]+)`)
 	sectionRegex    = regexp.MustCompile(`(?i)\bSec:\s*([^\s<]+)`)
