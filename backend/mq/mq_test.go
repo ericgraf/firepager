@@ -126,6 +126,16 @@ func TestMessageDecoding(t *testing.T) {
 				Source: "1024", Stations: []string{"53", "55", "50"}, DV: "5", Section: "53E", Grid: "BM69",
 			},
 		},
+		{
+			name:    "Flattened outside-fire page recognizes UTV unit",
+			rawJSON: `{"raw_text":"POCSAG512: Address:  930032  Function: 2  Alpha:   OUTSIDE FIRE-NO EXP.  11:17:08 3057 GREENLAND RD  Dv: 6  Sec: 66E  Gd: BG28 VANCES SIDE RD & SCOTCH PINE GRV UTV63 #116838 Sent by: FDP1<NUL>"}`,
+			expected: models.Message{
+				Type: "CALL", CallType: "OUTSIDE FIRE-NO EXP.", IncidentNumber: "26-116838",
+				Vehicles: []string{"UTV63"},
+				Address:  "3057 GREENLAND RD", Intersection: "VANCES SIDE RD & SCOTCH PINE GRV",
+				Source: "930032", Stations: []string{"63"}, DV: "6", Section: "66E", Grid: "BG28",
+			},
+		},
 	}
 
 	for _, s := range samples {
