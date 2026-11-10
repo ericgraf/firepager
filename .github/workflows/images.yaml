@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: [backend, frontend, client]
+        component: [backend, frontend, client, whatsapp-bridge]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3

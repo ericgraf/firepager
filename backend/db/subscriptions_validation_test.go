@@ -16,6 +16,16 @@ func TestNormalizeAndValidateSubscriptionSettingsAcceptsCatalogChannels(t *testi
 	}
 }
 
+func TestNormalizeAndValidateSubscriptionSettingsAcceptsAllPagesRule(t *testing.T) {
+	settings := &models.SubscriptionSettings{
+		Rules:    []models.SubscriptionRule{{Station: "", CallType: "", Enabled: true}},
+		Channels: []models.NotificationChannel{{Type: "whatsapp", Address: "+15555550123", Enabled: true}},
+	}
+	if err := NormalizeAndValidateSubscriptionSettings(settings); err != nil {
+		t.Fatalf("all-pages rule should be valid: %v", err)
+	}
+}
+
 func TestNormalizeAndValidateSubscriptionSettingsRejectsUnknownChannel(t *testing.T) {
 	settings := &models.SubscriptionSettings{Channels: []models.NotificationChannel{{Type: "carrier-pigeon", Address: "destination"}}}
 	if err := NormalizeAndValidateSubscriptionSettings(settings); err == nil {

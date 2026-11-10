@@ -61,44 +61,48 @@ func randomOTP() (string, error) {
 	return fmt.Sprintf("%06d", value), nil
 }
 
-// CreatePhoneVerificationChallenge stores only a bcrypt hash. The code is
-// deliberately not returned; a delivery adapter can be attached internally.
-func CreatePhoneVerificationChallenge(userID int) error {
+// CreatePhoneVerificationChallenge stores only a bcrypt hash and returns the
+// destination and plaintext code to the caller for immediate delivery. The
+// caller must never log or return the code to the client.
+func CreatePhoneVerificationChallenge(userID int) (string, string, error) {
 	var phone string
 	if err := DB.QueryRow(`SELECT phone_number FROM users WHERE id = $1`, userID).Scan(&phone); err != nil {
-		return err
+		return "", "", err
 	}
 	var recent int
 	if err := DB.QueryRow(`SELECT COUNT(*) FROM phone_verification_challenges WHERE user_id=$1 AND created_at > CURRENT_TIMESTAMP - INTERVAL '60 seconds'`, userID).Scan(&recent); err != nil {
-		return err
+		return "", "", err
 	}
 	if recent > 0 {
-		return ErrVerificationRateLimited
+		return "", "", ErrVerificationRateLimited
 	}
 	var daily int
 	if err := DB.QueryRow(`SELECT COUNT(*) FROM phone_verification_challenges WHERE user_id=$1 AND created_at > CURRENT_TIMESTAMP - INTERVAL '24 hours'`, userID).Scan(&daily); err != nil {
-		return err
+		return "", "", err
 	}
 	if daily >= 10 {
-		return ErrVerificationRateLimited
+		return "", "", ErrVerificationRateLimited
 	}
 	code, err := randomOTP()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	_, err = DB.Exec(`UPDATE phone_verification_challenges SET consumed_at=CURRENT_TIMESTAMP WHERE user_id=$1 AND consumed_at IS NULL`, userID)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	_, err = DB.Exec(`INSERT INTO phone_verification_challenges (user_id, phone_number, code_hash, expires_at) VALUES ($1,$2,$3,CURRENT_TIMESTAMP + INTERVAL '10 minutes')`, userID, phone, string(hash))
 	if err == nil {
 		_, err = DB.Exec(`UPDATE users SET phone_verification_status='pending' WHERE id=$1 AND phone_number=$2 AND phone_verification_status <> 'verified'`, userID, phone)
 	}
-	return err
+	if err != nil {
+		return "", "", err
+	}
+	return phone, code, nil
 }
 
 func ConfirmPhoneVerification(userID int, code string) error {
@@ -161,4 +165,15 @@ func WhatsAppEligible(userID int) (bool, error) {
 	var verified, consented bool
 	err := DB.QueryRow(`SELECT phone_verification_status='verified', whatsapp_consented FROM users WHERE id=$1`, userID).Scan(&verified, &consented)
 	return verified && consented, err
+}
+
+// WhatsAppRecipientEligible rechecks account eligibility at delivery time so
+// queued alerts are not sent after a user revokes consent or changes numbers.
+func WhatsAppRecipientEligible(phone string) (bool, error) {
+	var eligible bool
+	err := DB.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM users
+		WHERE phone_number=$1 AND phone_verification_status='verified' AND whatsapp_consented
+	)`, phone).Scan(&eligible)
+	return eligible, err
 }

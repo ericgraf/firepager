@@ -129,9 +129,8 @@ func NormalizeAndValidateSubscriptionSettings(settings *models.SubscriptionSetti
 	for i := range settings.Rules {
 		settings.Rules[i].Station = strings.TrimSpace(settings.Rules[i].Station)
 		settings.Rules[i].CallType = strings.TrimSpace(settings.Rules[i].CallType)
-		if settings.Rules[i].Station == "" && settings.Rules[i].CallType == "" {
-			return fmt.Errorf("rule %d must specify station or call_type", i)
-		}
+		// An empty station and call type is the explicit all-pages rule; the
+		// enqueue query already treats either empty field as an unrestricted match.
 	}
 	for i := range settings.Channels {
 		settings.Channels[i].Type = strings.ToLower(strings.TrimSpace(settings.Channels[i].Type))

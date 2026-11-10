@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/firepager/backend/db"
+	"github.com/firepager/backend/notifications"
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,7 +17,8 @@ type whatsappConsentRequest struct {
 }
 
 func RequestPhoneVerificationHandler(c *gin.Context) {
-	if err := db.CreatePhoneVerificationChallenge(c.MustGet("user_id").(int)); err != nil {
+	phone, code, err := db.CreatePhoneVerificationChallenge(c.MustGet("user_id").(int))
+	if err != nil {
 		if errors.Is(err, db.ErrVerificationRateLimited) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Verification request rate limit exceeded"})
 			return
@@ -24,8 +26,11 @@ func RequestPhoneVerificationHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification challenge"})
 		return
 	}
-	// Never include the OTP in a response. Delivery is intentionally owned by
-	// the notification boundary and is not exposed through this API.
+	if err := notifications.SendPhoneVerificationCode(phone, code); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Phone verification delivery is unavailable"})
+		return
+	}
+	// Never include the OTP or destination in the response.
 	c.JSON(http.StatusAccepted, gin.H{"status": "verification_sent", "expires_in": 600})
 }
 
