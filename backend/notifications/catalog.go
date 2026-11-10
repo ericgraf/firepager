@@ -63,7 +63,7 @@ func smsConfigured(config map[string]string, _ *models.User) bool {
 		strings.TrimSpace(config["TWILIO_ACCOUNT_SID"]) != "" && strings.TrimSpace(config["TWILIO_AUTH_TOKEN"]) != "" && strings.TrimSpace(config["TWILIO_FROM_NUMBER"]) != ""
 }
 
-func whatsappConfigured(config map[string]string, _ *models.User) bool {
+func whatsappConfigured(config map[string]string, user *models.User) bool {
 	if strings.EqualFold(strings.TrimSpace(config["WHATSAPP_PROVIDER"]), "baileys") {
 		url := strings.TrimSpace(config["WHATSAPP_BRIDGE_URL"])
 		token := strings.TrimSpace(config["WHATSAPP_BRIDGE_AUTH_TOKEN"])
@@ -73,7 +73,16 @@ func whatsappConfigured(config map[string]string, _ *models.User) bool {
 		if token == "" {
 			token = strings.TrimSpace(os.Getenv("WHATSAPP_BRIDGE_AUTH_TOKEN"))
 		}
-		return url != "" && token != ""
+		if url == "" || token == "" || user == nil || strings.TrimSpace(user.PhoneNumber) == "" {
+			return false
+		}
+		// Baileys is intentionally exposed only to the exact allowlisted account.
+		for _, allowed := range strings.Split(os.Getenv("BRIDGE_ALLOWLIST"), ",") {
+			if strings.TrimSpace(allowed) == strings.TrimSpace(user.PhoneNumber) {
+				return true
+			}
+		}
+		return false
 	}
 	return configTruthy(config["WHATSAPP_GATEWAY_ENABLED"]) && strings.TrimSpace(firstNonEmpty(config["META_WHATSAPP_ACCESS_TOKEN"], config["WHATSAPP_ACCESS_TOKEN"])) != "" &&
 		strings.TrimSpace(firstNonEmpty(config["META_WHATSAPP_PHONE_NUMBER_ID"], config["WHATSAPP_PHONE_NUMBER_ID"])) != ""
