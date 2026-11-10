@@ -50,12 +50,13 @@ func TestBuildChannelCatalogDoesNotClaimDisabledSMS(t *testing.T) {
 
 func TestBaileysCatalogUsesSecretFromEnvironment(t *testing.T) {
 	t.Setenv("WHATSAPP_BRIDGE_AUTH_TOKEN", "test-token")
+	t.Setenv("BRIDGE_ALLOWLIST", "+15555550123")
 	catalog := BuildChannelCatalog(map[string]string{
 		"WHATSAPP_GATEWAY_ENABLED": "true",
 		"WHATSAPP_PROVIDER":        "baileys",
 		"WHATSAPP_BRIDGE_URL":      "http://whatsapp-bridge:8787",
 		"WHATSAPP_VERIFIED":        "true",
-	}, &models.User{})
+	}, &models.User{PhoneNumber: "+15555550123"})
 	for _, channel := range catalog {
 		if channel.ID != "whatsapp" {
 			continue
@@ -64,6 +65,25 @@ func TestBaileysCatalogUsesSecretFromEnvironment(t *testing.T) {
 			t.Fatalf("expected configured Baileys WhatsApp channel to be usable: %+v", channel)
 		}
 		return
+	}
+	t.Fatal("WhatsApp channel missing from catalog")
+}
+
+func TestBaileysCatalogHidesChannelFromNonAllowlistedUsers(t *testing.T) {
+	t.Setenv("WHATSAPP_BRIDGE_AUTH_TOKEN", "test-token")
+	t.Setenv("BRIDGE_ALLOWLIST", "+15555550123")
+	catalog := BuildChannelCatalog(map[string]string{
+		"WHATSAPP_GATEWAY_ENABLED": "true",
+		"WHATSAPP_PROVIDER":        "baileys",
+		"WHATSAPP_BRIDGE_URL":      "http://whatsapp-bridge:8787",
+	}, &models.User{PhoneNumber: "+15555550124"})
+	for _, channel := range catalog {
+		if channel.ID == "whatsapp" {
+			if channel.Configured {
+				t.Fatalf("WhatsApp should be unavailable outside the allowlist: %+v", channel)
+			}
+			return
+		}
 	}
 	t.Fatal("WhatsApp channel missing from catalog")
 }
