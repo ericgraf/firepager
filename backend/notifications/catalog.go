@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"os"
 	"strings"
 
 	"github.com/firepager/backend/models"
@@ -64,7 +65,15 @@ func smsConfigured(config map[string]string, _ *models.User) bool {
 
 func whatsappConfigured(config map[string]string, _ *models.User) bool {
 	if strings.EqualFold(strings.TrimSpace(config["WHATSAPP_PROVIDER"]), "baileys") {
-		return strings.TrimSpace(config["WHATSAPP_BRIDGE_URL"]) != "" && strings.TrimSpace(config["WHATSAPP_BRIDGE_AUTH_TOKEN"]) != ""
+		url := strings.TrimSpace(config["WHATSAPP_BRIDGE_URL"])
+		token := strings.TrimSpace(config["WHATSAPP_BRIDGE_AUTH_TOKEN"])
+		if url == "" {
+			url = strings.TrimSpace(os.Getenv("WHATSAPP_BRIDGE_URL"))
+		}
+		if token == "" {
+			token = strings.TrimSpace(os.Getenv("WHATSAPP_BRIDGE_AUTH_TOKEN"))
+		}
+		return url != "" && token != ""
 	}
 	return configTruthy(config["WHATSAPP_GATEWAY_ENABLED"]) && strings.TrimSpace(firstNonEmpty(config["META_WHATSAPP_ACCESS_TOKEN"], config["WHATSAPP_ACCESS_TOKEN"])) != "" &&
 		strings.TrimSpace(firstNonEmpty(config["META_WHATSAPP_PHONE_NUMBER_ID"], config["WHATSAPP_PHONE_NUMBER_ID"])) != ""
@@ -89,11 +98,15 @@ func BuildChannelCatalog(config map[string]string, user *models.User) []models.N
 		verified := configured && configTruthy(config[strings.ToUpper(definition.id)+"_VERIFIED"])
 		enabled := definition.enabled(config)
 		ready := providerReady(config, definition.id, configured)
+		deliveryImplemented := definition.deliveryImplemented
+		if definition.id == "whatsapp" && strings.EqualFold(strings.TrimSpace(config["WHATSAPP_PROVIDER"]), "baileys") {
+			deliveryImplemented = true
+		}
 		result = append(result, models.NotificationChannelCatalog{
 			ID: definition.id, Label: definition.label, Supported: true,
 			Configured: configured, Verified: verified, Disabled: !enabled,
-			DeliveryImplemented: definition.deliveryImplemented,
-			Usable:              configured && verified && enabled && definition.deliveryImplemented && ready,
+			DeliveryImplemented: deliveryImplemented,
+			Usable:              configured && verified && enabled && deliveryImplemented && ready,
 		})
 	}
 	return result

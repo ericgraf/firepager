@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,45 @@ import (
 
 var ErrProviderDisabled = fmt.Errorf("notification provider is disabled or not configured")
 
+// SendPhoneVerificationCode sends a short-lived one-time code through the
+// explicitly configured Baileys bridge. The bridge allowlist and the
+// database's hashed, expiring challenge provide separate safety gates.
+func SendPhoneVerificationCode(phone, code string) error {
+	configs, err := db.GetConfigs()
+	if err != nil {
+		return ErrProviderDisabled
+	}
+	values := make(map[string]string, len(configs))
+	for _, config := range configs {
+		values[config.Key] = config.Value
+	}
+	bridge := ParseBaileysConfig(values)
+	if !bridge.Enabled || !strings.EqualFold(strings.TrimSpace(values["WHATSAPP_PROVIDER"]), "baileys") {
+		return ErrProviderDisabled
+	}
+	request, err := buildBaileysTextRequest(phone, "Your Firepager verification code is "+code+". It expires in 10 minutes.")
+	if err != nil {
+		return err
+	}
+	if err := NewBaileysSender(bridge, nil).Send(context.Background(), request); err != nil {
+		return errors.New("phone verification delivery failed")
+	}
+	return nil
+}
+
+func buildBaileysTextRequest(phone, text string) (MetaCloudTemplateRequest, error) {
+	to, err := NormalizeE164(phone)
+	if err != nil {
+		return MetaCloudTemplateRequest{}, ErrInvalidE164
+	}
+	return MetaCloudTemplateRequest{
+		To: to,
+		Template: TemplateObject{Components: []TemplateComponent{{
+			Type: "body", Parameters: []TemplateParameter{{Type: "text", Text: text}},
+		}}},
+	}, nil
+}
+
 // Deliver is the worker-only delivery boundary. It never falls back to the
 // legacy synchronous helpers and therefore cannot accidentally send during
 // RabbitMQ message ingestion.
@@ -30,6 +70,24 @@ func Deliver(ctx context.Context, channel, recipient string, msg *models.Message
 	values := make(map[string]string, len(configs))
 	for _, c := range configs {
 		values[c.Key] = c.Value
+	}
+	if channel == "whatsapp" && strings.EqualFold(strings.TrimSpace(values["WHATSAPP_PROVIDER"]), "baileys") {
+		bridge := ParseBaileysConfig(values)
+		if !bridge.Enabled || bridge.Endpoint == "" || bridge.Token == "" {
+			return ErrProviderDisabled
+		}
+		eligible, err := db.WhatsAppRecipientEligible(recipient)
+		if err != nil {
+			return errors.New("whatsapp eligibility could not be checked")
+		}
+		if !eligible {
+			return errors.New("whatsapp recipient is not eligible")
+		}
+		request, err := buildBaileysTextRequest(recipient, buildWhatsAppContent(msg))
+		if err != nil {
+			return err
+		}
+		return NewBaileysSender(bridge, nil).Send(ctx, request)
 	}
 	cfg := ProviderConfigFromMap(values, channel)
 	if !cfg.Usable() {

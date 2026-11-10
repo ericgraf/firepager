@@ -47,3 +47,23 @@ func TestBuildChannelCatalogDoesNotClaimDisabledSMS(t *testing.T) {
 		t.Fatalf("expected disabled SMS to be unusable: %+v", catalog[0])
 	}
 }
+
+func TestBaileysCatalogUsesSecretFromEnvironment(t *testing.T) {
+	t.Setenv("WHATSAPP_BRIDGE_AUTH_TOKEN", "test-token")
+	catalog := BuildChannelCatalog(map[string]string{
+		"WHATSAPP_GATEWAY_ENABLED": "true",
+		"WHATSAPP_PROVIDER":        "baileys",
+		"WHATSAPP_BRIDGE_URL":      "http://whatsapp-bridge:8787",
+		"WHATSAPP_VERIFIED":        "true",
+	}, &models.User{})
+	for _, channel := range catalog {
+		if channel.ID != "whatsapp" {
+			continue
+		}
+		if !channel.Configured || !channel.DeliveryImplemented || !channel.Usable {
+			t.Fatalf("expected configured Baileys WhatsApp channel to be usable: %+v", channel)
+		}
+		return
+	}
+	t.Fatal("WhatsApp channel missing from catalog")
+}

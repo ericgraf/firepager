@@ -34,3 +34,16 @@ func TestBaileysSenderRedactsProviderFailures(t *testing.T) {
 		t.Fatalf("unsafe provider error: %v", err)
 	}
 }
+
+func TestBuildBaileysTextRequestNormalizesRecipient(t *testing.T) {
+	request, err := buildBaileysTextRequest("+1 (212) 555-0100", "verification")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.To != "+12125550100" || request.Template.Components[0].Parameters[0].Text != "verification" {
+		t.Fatalf("unexpected Baileys text request: %+v", request)
+	}
+	if _, err := buildBaileysTextRequest("2125550100", "verification"); err == nil {
+		t.Fatal("expected local number without country code to be rejected")
+	}
+}
