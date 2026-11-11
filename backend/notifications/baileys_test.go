@@ -47,3 +47,22 @@ func TestBuildBaileysTextRequestNormalizesRecipient(t *testing.T) {
 		t.Fatal("expected local number without country code to be rejected")
 	}
 }
+
+func TestGetBaileysPairingStatusUsesBridgeAuthAndReturnsQR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer bridge-secret" {
+			t.Error("pairing request was missing bridge authorization")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"connection":"pairing","qr":"data:image/png;base64,abc"}`))
+	}))
+	defer server.Close()
+	cfg := BaileysConfig{Enabled: true, Endpoint: server.URL, Token: "bridge-secret"}
+	status, err := GetBaileysPairingStatus(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Connection != "pairing" || status.QR != "data:image/png;base64,abc" {
+		t.Fatalf("unexpected pairing response: %+v", status)
+	}
+}

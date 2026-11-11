@@ -20,8 +20,8 @@ import (
 var ErrProviderDisabled = fmt.Errorf("notification provider is disabled or not configured")
 
 // SendPhoneVerificationCode sends a short-lived one-time code through the
-// explicitly configured Baileys bridge. The bridge allowlist and the
-// database's hashed, expiring challenge provide separate safety gates.
+// explicitly configured Baileys bridge. The database's hashed, expiring
+// challenge and request rate limit provide separate safety gates.
 func SendPhoneVerificationCode(phone, code string) error {
 	configs, err := db.GetConfigs()
 	if err != nil {

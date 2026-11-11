@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -46,6 +47,41 @@ var atoi = func(value string) int { n, _ := strconv.Atoi(value); return n }
 type BaileysSender struct {
 	Config BaileysConfig
 	Client *http.Client
+}
+
+type BaileysPairingStatus struct {
+	Connection string `json:"connection"`
+	QR         string `json:"qr,omitempty"`
+}
+
+// GetBaileysPairingStatus reads the bridge's authenticated pairing status.
+// Callers must authorize an administrator before returning a QR because it
+// grants access to the shared linked WhatsApp account.
+func GetBaileysPairingStatus(ctx context.Context, cfg BaileysConfig, client *http.Client) (BaileysPairingStatus, error) {
+	if !cfg.Enabled || cfg.Endpoint == "" || cfg.Token == "" {
+		return BaileysPairingStatus{}, errors.New("whatsapp bridge is not configured")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: cfg.Timeout}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Endpoint+"/pairing", nil)
+	if err != nil {
+		return BaileysPairingStatus{}, errors.New("whatsapp pairing request could not be created")
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return BaileysPairingStatus{}, errors.New("whatsapp pairing status is unavailable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return BaileysPairingStatus{}, errors.New("whatsapp pairing status is unavailable")
+	}
+	var status BaileysPairingStatus
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&status); err != nil || strings.TrimSpace(status.Connection) == "" {
+		return BaileysPairingStatus{}, errors.New("whatsapp pairing status is invalid")
+	}
+	return status, nil
 }
 
 func NewBaileysSender(cfg BaileysConfig, client *http.Client) *BaileysSender {

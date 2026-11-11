@@ -34,7 +34,9 @@ function authorized(req) {
   return Boolean(config.token) && supplied.length === config.token.length &&
     crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(config.token));
 }
-function allowed(to) { return config.allowlist.length === 0 || config.allowlist.includes(to); }
+// A wildcard is an explicit deployment choice for the shared sender account;
+// an empty allowlist denies delivery rather than silently opening it.
+function allowed(to) { return config.allowlist.includes('*') || config.allowlist.includes(to); }
 function limited(req) {
   const key = req.socket.remoteAddress || 'local';
   const now = Date.now();
@@ -58,19 +60,51 @@ async function startBaileys() {
   const QRCode = require('qrcode');
   fs.mkdirSync(config.authDir, { recursive: true, mode: 0o700 });
   const { state, saveCreds } = await baileys.useMultiFileAuthState(config.authDir);
-  const sock = baileys.default({ auth: state, printQRInTerminal: false, browser: ['Firepager', 'Bridge', '0.1'] });
-  connection = state.creds.registered ? 'connecting' : 'pairing';
-  sock.ev.on('creds.update', saveCreds);
-  sock.ev.on('connection.update', async update => {
-    if (update.qr) qr = await QRCode.toDataURL(update.qr);
-    if (update.connection) connection = update.connection;
-    if (update.connection === 'open') qr = null;
-  });
-  sendImpl = async ({ to, text }) => {
-    if (connection !== 'open') throw new Error('not connected');
-    const result = await sock.sendMessage(`${to.slice(1)}@s.whatsapp.net`, { text });
-    return { id: result?.key?.id || 'sent' };
+  let reconnectTimer = null;
+  let reconnectAttempt = 0;
+  const scheduleReconnect = () => {
+    if (reconnectTimer) return;
+    const delay = Math.min(30000, 2000 * (2 ** reconnectAttempt++));
+    qr = null;
+    connection = 'reconnecting';
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect().catch(() => scheduleReconnect());
+    }, delay);
   };
+  const connect = async () => {
+    const sock = baileys.default({ auth: state, printQRInTerminal: false, browser: ['Firepager', 'Bridge', '0.1'] });
+    connection = state.creds.registered ? 'connecting' : 'pairing';
+    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('connection.update', async update => {
+      if (update.qr) {
+        const nextQR = await QRCode.toDataURL(update.qr);
+        if (connection !== 'reconnecting' && connection !== 'close' && connection !== 'logged_out') qr = nextQR;
+      }
+      if (update.connection === 'open') {
+        connection = 'open';
+        qr = null;
+        reconnectAttempt = 0;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      } else if (update.connection === 'close') {
+        qr = null;
+        const statusCode = update.lastDisconnect?.error?.output?.statusCode;
+        if (statusCode === baileys.DisconnectReason?.loggedOut) {
+          connection = 'logged_out';
+          return;
+        }
+        scheduleReconnect();
+      } else if (update.connection) {
+        connection = update.connection;
+      }
+    });
+    sendImpl = async ({ to, text }) => {
+      if (connection !== 'open') throw new Error('not connected');
+      const result = await sock.sendMessage(`${to.slice(1)}@s.whatsapp.net`, { text });
+      return { id: result?.key?.id || 'sent' };
+    };
+  };
+  await connect().catch(() => scheduleReconnect());
 }
 
 async function handler(req, res) {

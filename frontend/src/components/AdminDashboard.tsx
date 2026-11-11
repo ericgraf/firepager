@@ -32,7 +32,7 @@ const CONFIG_META: Record<string, ConfigMeta> = {
   },
   WHATSAPP_GATEWAY_ENABLED: {
     label: 'WhatsApp Gateway Enabled',
-    description: 'Enable or disable outbound WhatsApp delivery globally.',
+    description: 'Enable or disable shared WhatsApp delivery for opted-in accounts globally.',
     placeholder: 'true or false'
   },
   SMS_PROVIDER: {
@@ -72,6 +72,61 @@ const CONFIG_META: Record<string, ConfigMeta> = {
     placeholder: 'Ottawa, ON'
   }
 };
+
+type WhatsAppPairingStatus = { connection: string; qr?: string };
+
+function WhatsAppPairingPanel({ token }: { token: string | null }) {
+  const [status, setStatus] = useState<WhatsAppPairingStatus | null>(null);
+  const [requested, setRequested] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    if (!token) return;
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/whatsapp/pairing', {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('WhatsApp pairing is temporarily unavailable. Try again shortly.');
+      setStatus(await response.json());
+      setRequested(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to load WhatsApp pairing.');
+    } finally {
+      setBusy(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!requested || !token || status?.connection === 'open') return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await fetch('/api/admin/whatsapp/pairing', {
+          headers: { Authorization: `Bearer ${token}` }, cache: 'no-store'
+        });
+        if (response.ok && !cancelled) setStatus(await response.json());
+      } catch { /* Keep polling; manual refresh remains available. */ }
+    };
+    const timer = window.setInterval(poll, 4000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [requested, status?.connection, token]);
+
+  return <section className="admin-section card">
+    <div className="card-header"><h2>Shared WhatsApp account</h2></div>
+    <div className="whatsapp-pairing">
+      <div><h4>Link the organization’s sender account</h4><p className="small-text">This single WhatsApp account sends alerts for all users who have individually verified their phone number, consented, and enabled WhatsApp notifications. Scan with WhatsApp → Linked devices → Link a device.</p></div>
+      <button type="button" onClick={() => void refresh()} disabled={busy}>{busy ? 'Loading…' : status?.connection === 'open' ? 'Linked' : status ? 'Refresh pairing QR' : 'Show pairing QR'}</button>
+      {error && <p className="error" role="alert">{error}</p>}
+      {status && <>
+        <p className="small-text" role="status" aria-live="polite">Sender status: {status.connection === 'open' ? 'Linked and connected' : status.connection}</p>
+        {status.qr ? <figure className="whatsapp-pairing-qr"><img src={status.qr} alt="Shared WhatsApp sender pairing QR code" /><figcaption>This QR grants access to the shared sender account. Only scan it on the authorized Firepager server.</figcaption></figure> : status.connection !== 'open' && <p className="small-text">No active QR is available yet. Refresh in a moment.</p>}
+      </>}
+    </div>
+  </section>;
+}
 
 interface Stat {
   label: string;
@@ -614,6 +669,8 @@ export function AdminDashboard() {
           </div>
         )}
       </section>
+
+      <WhatsAppPairingPanel token={token} />
 
       <section className="admin-section card">
         <div className="card-header">
