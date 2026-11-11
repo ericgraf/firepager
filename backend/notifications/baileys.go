@@ -84,6 +84,32 @@ func GetBaileysPairingStatus(ctx context.Context, cfg BaileysConfig, client *htt
 	return status, nil
 }
 
+// ResetBaileysPairing clears a logged-out shared sender session through the
+// authenticated bridge. The bridge refuses reset requests unless logged out.
+func ResetBaileysPairing(ctx context.Context, cfg BaileysConfig, client *http.Client) error {
+	if !cfg.Enabled || cfg.Endpoint == "" || cfg.Token == "" {
+		return errors.New("whatsapp bridge is not configured")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: cfg.Timeout}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.Endpoint+"/pairing/reset", nil)
+	if err != nil {
+		return errors.New("whatsapp pairing reset request could not be created")
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return errors.New("whatsapp pairing reset is unavailable")
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusAccepted {
+		return errors.New("whatsapp pairing reset was rejected")
+	}
+	return nil
+}
+
 func NewBaileysSender(cfg BaileysConfig, client *http.Client) *BaileysSender {
 	if client == nil {
 		client = &http.Client{Timeout: cfg.Timeout}

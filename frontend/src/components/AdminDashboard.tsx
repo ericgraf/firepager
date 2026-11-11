@@ -79,6 +79,7 @@ function WhatsAppPairingPanel({ token }: { token: string | null }) {
   const [status, setStatus] = useState<WhatsAppPairingStatus | null>(null);
   const [requested, setRequested] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
@@ -98,6 +99,24 @@ function WhatsAppPairingPanel({ token }: { token: string | null }) {
       setBusy(false);
     }
   }, [token]);
+
+  const resetLoggedOutSender = async () => {
+    if (!token || status?.connection !== 'logged_out' || !window.confirm('Reset the saved WhatsApp link? This clears the logged-out device credentials and restarts the bridge so a new QR can be generated.')) return;
+    setResetBusy(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/whatsapp/pairing/reset', {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('The saved WhatsApp link could not be reset. Refresh the status and try again.');
+      setStatus({ connection: 'restarting' });
+      setRequested(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to reset the saved WhatsApp link.');
+    } finally {
+      setResetBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!requested || !token || status?.connection === 'open') return;
@@ -123,6 +142,7 @@ function WhatsAppPairingPanel({ token }: { token: string | null }) {
       {status && <>
         <p className="small-text" role="status" aria-live="polite">Sender status: {status.connection === 'open' ? 'Linked and connected' : status.connection}</p>
         {status.qr ? <figure className="whatsapp-pairing-qr"><img src={status.qr} alt="Shared WhatsApp sender pairing QR code" /><figcaption>This QR grants access to the shared sender account. Only scan it on the authorized Firepager server.</figcaption></figure> : status.connection !== 'open' && <p className="small-text">No active QR is available yet. Refresh in a moment.</p>}
+        {status.connection === 'logged_out' && <button type="button" className="danger-btn" onClick={() => void resetLoggedOutSender()} disabled={resetBusy}>{resetBusy ? 'Resetting…' : 'Reset saved link and get a new QR'}</button>}
       </>}
     </div>
   </section>;

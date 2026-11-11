@@ -22,6 +22,7 @@ const config = {
 const buckets = new Map();
 let qr = null;
 let connection = 'mock';
+let scheduleRestart = () => setTimeout(() => process.exit(0), 250);
 let sendImpl = async () => ({ id: `mock-${crypto.randomUUID()}` });
 
 function safe(value) { return value ? '<redacted>' : '<empty>'; }
@@ -52,6 +53,15 @@ async function body(req) {
   return JSON.parse(raw || '{}');
 }
 function safeError() { return { error: 'bridge provider failed' }; }
+
+function clearAuthState() {
+  const authDir = path.resolve(config.authDir);
+  if (authDir === path.parse(authDir).root) throw new Error('unsafe auth directory');
+  fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
+  for (const entry of fs.readdirSync(authDir)) {
+    fs.rmSync(path.join(authDir, entry), { recursive: true, force: true });
+  }
+}
 
 async function startBaileys() {
   // Dynamic loading keeps mock/test mode independent from Baileys and avoids
@@ -113,6 +123,21 @@ async function handler(req, res) {
   }
   if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
   if (req.method === 'GET' && req.url === '/pairing') return json(res, 200, { connection, qr });
+  if (req.method === 'POST' && req.url === '/pairing/reset') {
+    if (!config.enabled || config.mode !== 'baileys') return json(res, 503, { error: 'bridge disabled' });
+    if (connection !== 'logged_out') return json(res, 409, { error: 'reset is only available after logout' });
+    try {
+      clearAuthState();
+    } catch (err) {
+      console.error('bridge auth reset failed', safe(err?.message));
+      return json(res, 500, { error: 'pairing reset failed' });
+    }
+    qr = null;
+    connection = 'restarting';
+    json(res, 202, { ok: true, connection });
+    scheduleRestart();
+    return;
+  }
   if (req.method !== 'POST' || req.url !== '/send') return json(res, 404, { error: 'not found' });
   if (!config.enabled) return json(res, 503, { error: 'bridge disabled' });
   if (limited(req)) return json(res, 429, { error: 'rate limit exceeded' });
@@ -140,4 +165,10 @@ if (require.main === module) {
     console.log(`WhatsApp bridge listening on ${config.host}:${config.port} (${config.mode})`));
 }
 
-module.exports = { handler, config, buckets, safeError, setSendImpl: fn => { sendImpl = fn; } };
+module.exports = {
+  handler, config, buckets, safeError,
+  setSendImpl: fn => { sendImpl = fn; },
+  setConnectionForTest: value => { connection = value; },
+  setRestartForTest: fn => { scheduleRestart = fn; },
+  clearAuthState,
+};

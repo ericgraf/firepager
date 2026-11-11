@@ -23,3 +23,16 @@ func GetWhatsAppPairingHandler(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, status)
 }
+
+func ResetWhatsAppPairingHandler(c *gin.Context) {
+	bridge := notifications.ParseBaileysConfig(map[string]string{
+		"WHATSAPP_GATEWAY_ENABLED": "true",
+		"WHATSAPP_PROVIDER":        "baileys",
+	})
+	if err := notifications.ResetBaileysPairing(c.Request.Context(), bridge, nil); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "WhatsApp pairing reset is unavailable or was rejected"})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusAccepted, gin.H{"status": "restarting"})
+}
