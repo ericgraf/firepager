@@ -66,3 +66,20 @@ func TestGetBaileysPairingStatusUsesBridgeAuthAndReturnsQR(t *testing.T) {
 		t.Fatalf("unexpected pairing response: %+v", status)
 	}
 }
+
+func TestResetBaileysPairingUsesAuthenticatedBridge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/pairing/reset" {
+			t.Errorf("unexpected reset request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer bridge-secret" {
+			t.Error("reset request was missing bridge authorization")
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	cfg := BaileysConfig{Enabled: true, Endpoint: server.URL, Token: "bridge-secret"}
+	if err := ResetBaileysPairing(context.Background(), cfg, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+}

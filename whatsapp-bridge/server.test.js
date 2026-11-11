@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { handler, config, buckets, setSendImpl } = require('./server');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { handler, config, buckets, setSendImpl, setConnectionForTest, setRestartForTest } = require('./server');
 
 function request(method, url, headers = {}, data) {
   return new Promise((resolve, reject) => {
@@ -34,4 +37,33 @@ test('provider failures are redacted', async () => {
   const result = await request('POST', `${url}/send`, { authorization: 'Bearer secret', 'content-type': 'application/json' }, { to: '+12125550100', text: 'private message' });
   assert.equal(result.status, 502); assert.deepEqual(result.body, { error: 'bridge provider failed' });
   server.close(); Object.assign(config, old);
+});
+
+test('pairing reset is authenticated and only clears logged-out credentials', async () => {
+  const old = { token: config.token, enabled: config.enabled, mode: config.mode, authDir: config.authDir };
+  const authDir = fs.mkdtempSync(path.join(os.tmpdir(), 'firepager-wa-auth-'));
+  fs.writeFileSync(path.join(authDir, 'creds.json'), 'placeholder');
+  config.token = 'reset-token'; config.enabled = true; config.mode = 'baileys'; config.authDir = authDir;
+  let restarts = 0;
+  setRestartForTest(() => { restarts++; });
+  const server = http.createServer(handler).listen(0);
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const headers = { authorization: 'Bearer reset-token' };
+
+  setConnectionForTest('open');
+  assert.equal((await request('POST', `${url}/pairing/reset`)).status, 401);
+  assert.equal((await request('POST', `${url}/pairing/reset`, headers)).status, 409);
+  assert.equal(fs.existsSync(path.join(authDir, 'creds.json')), true);
+
+  setConnectionForTest('logged_out');
+  const result = await request('POST', `${url}/pairing/reset`, headers);
+  assert.equal(result.status, 202);
+  assert.deepEqual(fs.readdirSync(authDir), []);
+  assert.equal(restarts, 1);
+
+  server.close();
+  fs.rmSync(authDir, { recursive: true, force: true });
+  Object.assign(config, old);
+  setConnectionForTest('mock');
+  setRestartForTest(() => {});
 });

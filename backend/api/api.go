@@ -68,6 +68,7 @@ func SetupRouter() *gin.Engine {
 				admin.PUT("/users/:id/role", updateUserRole)
 				admin.PUT("/configs", updateConfigs)
 				admin.GET("/whatsapp/pairing", GetWhatsAppPairingHandler)
+				admin.POST("/whatsapp/pairing/reset", ResetWhatsAppPairingHandler)
 			}
 		}
 	}
