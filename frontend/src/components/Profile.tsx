@@ -535,8 +535,8 @@ function SubscriptionSettings({
         </fieldset>
 
         <div className="whatsapp-panel">
-           <div><h3>WhatsApp setup</h3><p className="small-text">Number on file: <strong>{whatsappStatus?.phone_masked || maskPhone(phoneNumber)}</strong></p><p className="small-text">{whatsappEligible ? 'This service is available for your account.' : 'WhatsApp is unavailable until the service is enabled and eligible by the server.'}</p></div>
-           <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => { setWhatsappConsent(event.target.checked); setDirty(true); }} disabled={!whatsappEligible} /> <span>I consent to receiving FirePager alerts on WhatsApp at this number.</span></label>
+            <div><h3>WhatsApp setup</h3><p className="small-text">Number on file: <strong>{whatsappStatus?.phone_masked || maskPhone(phoneNumber)}</strong></p><p className="small-text">{whatsappEligible ? 'This service is available for your account.' : 'WhatsApp is unavailable until the service is enabled and eligible by the server.'}</p></div>
+            <label className="consent-option"><input type="checkbox" checked={whatsappConsent} onChange={(event) => { setWhatsappConsent(event.target.checked); setDirty(true); }} disabled={!whatsappEligible} /> <span>I consent to receiving FirePager alerts on WhatsApp at this number.</span></label>
            <label className="consent-option"><input type="checkbox" checked={policyAccepted} onChange={async (event) => {
              const accepted = event.target.checked;
              setPolicyAccepted(accepted); setDirty(true);

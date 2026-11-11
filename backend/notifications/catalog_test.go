@@ -69,7 +69,7 @@ func TestBaileysCatalogUsesSecretFromEnvironment(t *testing.T) {
 	t.Fatal("WhatsApp channel missing from catalog")
 }
 
-func TestBaileysCatalogHidesChannelFromNonAllowlistedUsers(t *testing.T) {
+func TestBaileysCatalogSupportsSharedSenderForOtherUsers(t *testing.T) {
 	t.Setenv("WHATSAPP_BRIDGE_AUTH_TOKEN", "test-token")
 	t.Setenv("BRIDGE_ALLOWLIST", "+15555550123")
 	catalog := BuildChannelCatalog(map[string]string{
@@ -79,8 +79,8 @@ func TestBaileysCatalogHidesChannelFromNonAllowlistedUsers(t *testing.T) {
 	}, &models.User{PhoneNumber: "+15555550124"})
 	for _, channel := range catalog {
 		if channel.ID == "whatsapp" {
-			if channel.Configured {
-				t.Fatalf("WhatsApp should be unavailable outside the allowlist: %+v", channel)
+			if !channel.Configured {
+				t.Fatalf("shared WhatsApp sender should be available to other users: %+v", channel)
 			}
 			return
 		}

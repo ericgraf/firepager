@@ -67,6 +67,7 @@ func SetupRouter() *gin.Engine {
 				admin.DELETE("/messages/:id", deleteMessage)
 				admin.PUT("/users/:id/role", updateUserRole)
 				admin.PUT("/configs", updateConfigs)
+				admin.GET("/whatsapp/pairing", GetWhatsAppPairingHandler)
 			}
 		}
 	}

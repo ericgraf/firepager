@@ -1175,6 +1175,11 @@ button:hover {
 .provider-legend .pending-key::before { background: #92400e; }
 .whatsapp-panel { display: flex; flex-direction: column; gap: 14px; margin-top: 20px; padding: 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); }
 .whatsapp-panel h3 { margin: 0 0 4px; color: var(--text-h); font-size: 16px; }
+.whatsapp-pairing { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); }
+.whatsapp-pairing h4 { margin: 0 0 4px; color: var(--text-h); font-size: 14px; }
+.whatsapp-pairing-qr { margin: 0; padding: 12px; border-radius: 8px; background: #fff; text-align: center; }
+.whatsapp-pairing-qr img { display: block; width: min(100%, 320px); height: auto; }
+.whatsapp-pairing-qr figcaption { max-width: 320px; padding-top: 8px; color: #333; font-size: 12px; }
 .consent-option { font-size: 14px; }
 .verification-controls { display: flex; flex-wrap: wrap; gap: 8px; }
 .verification-controls input { min-width: 180px; flex: 1; }
