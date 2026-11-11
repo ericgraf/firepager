@@ -136,6 +136,27 @@ func TestMessageDecoding(t *testing.T) {
 				Source: "930032", Stations: []string{"63"}, DV: "6", Section: "66E", Grid: "BG28",
 			},
 		},
+		{
+			name:    "Flattened page recognizes new CAD and investigator units",
+			rawJSON: `{"raw_text":"POCSAG512: Address:  2054  Function: 2  Alpha:   WORKING FIRE  10:37:43 7116 BANK ST  Dv: 9  Sec: 91D  Gd: AI68 JOHN QUINN RD & TURN LANE INV2 #118404 Sent by: FDP1<NUL>"}`,
+			expected: models.Message{
+				Type: "CALL", CallType: "WORKING FIRE", IncidentNumber: "26-118404",
+				Vehicles: []string{"INV2"}, Address: "7116 BANK ST",
+				Intersection: "JOHN QUINN RD & TURN LANE", Stations: []string{"2"},
+				Source: "2054", DV: "9", Section: "91D", Grid: "AI68",
+			},
+		},
+		{
+			name:    "Flattened page recognizes county unit families without absorbing location",
+			rawJSON: `{"raw_text":"POCSAG512: Address: 1200000  Function: 2  Alpha:   SMOKE VISIBLE INSIDE-FIRE  15:36:47 11012 IRISH HEADLINE RD  Dv:   Sec: ND2B  Gd: ND2B PLEASANT VALLEY RD & SDG COUNTY RD 16 BR NP2 NP3 NRE2 NRE3 NS2 NS3 NTA2 NTA3 NTA4 NTA1 NAM1 #117145 Sent by: FDP1"}`,
+			expected: models.Message{
+				Type: "CALL", CallType: "SMOKE VISIBLE INSIDE-FIRE", IncidentNumber: "26-117145",
+				Vehicles: []string{"NP2", "NP3", "NRE2", "NRE3", "NS2", "NS3", "NTA2", "NTA3", "NTA4", "NTA1", "NAM1"},
+				Address:  "11012 IRISH HEADLINE RD", Intersection: "PLEASANT VALLEY RD & SDG COUNTY RD 16 BR",
+				Stations: []string{"2", "3", "4", "1"},
+				Source:   "1200000", Section: "ND2B", Grid: "ND2B",
+			},
+		},
 	}
 
 	for _, s := range samples {
