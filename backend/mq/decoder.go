@@ -11,13 +11,14 @@ import (
 var (
 	pocsagRegex     = regexp.MustCompile(`POCSAG\d+: Address:\s+(\d+)\s+Function: (\d)\s+Alpha:\s+(.*)`)
 	incidentRegex   = regexp.MustCompile(`#(\d+)`)
-	vehicleTypes    = []string{"UTV", "PT", "TA", "WR", "SC", "LA", "DC", "RE", "SO", "T", "P"}
 	pageIDRegex     = regexp.MustCompile(`ID:([A-Za-z0-9]+)`)
 	timeRegex       = regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}\b`)
 	dispatchRegex   = regexp.MustCompile(`\s+(?:Dv|Dt):`)
 	vehicleRegex    = regexp.MustCompile(`(?i)\b(?:UTV|PT|TA|WR|SC|LA|DC|RE|SO|T|P)\d+[A-Z]?\b`)
+	unitTokenRegex  = regexp.MustCompile(`(?i)^[A-Z]{1,6}\d{1,4}[A-Z]?$`)
+	unitPrefixRegex = regexp.MustCompile(`(?i)^[A-Z]+`)
 	gridCodeRegex   = regexp.MustCompile(`(?i)^([A-Z]{0,2}\d{1,2}[A-Z]?)\s*(.*)$`)
-	dvRegex         = regexp.MustCompile(`(?i)\bDv:\s*([^\s<]+)`)
+	dvRegex         = regexp.MustCompile(`(?i)\bDv:\s*(\d+)\b`)
 	sectionRegex    = regexp.MustCompile(`(?i)\bSec:\s*([^\s<]+)`)
 	gridRegex       = regexp.MustCompile(`(?i)\bGd:\s*([^\s<]+)`)
 	aliasRegex      = regexp.MustCompile(`(?i)\bAlias:\s*(.*)`)
@@ -109,6 +110,12 @@ func decodeMessage(m *models.Message) {
 	}
 }
 
+// DecodeMessage parses the dispatch fields in a stored raw pager message.
+// It is exported for administrative reprocessing of records after parser fixes.
+func DecodeMessage(m *models.Message) {
+	decodeMessage(m)
+}
+
 // splitFlattenedCall reconstructs the semantic lines from real decoder output
 // that has lost its <LF> markers. The timestamp, Dv/Dt, Gd, vehicle tokens and
 // incident marker are explicit delimiters in the dispatch format.
@@ -128,25 +135,16 @@ func splitFlattenedCall(payload string) []string {
 	}
 	gdStart := metaStart + gdOffset
 	gridAndLocation := strings.TrimSpace(payload[gdStart+len("Gd:"):])
-	vehicleLoc := vehicleRegex.FindStringIndex(gridAndLocation)
-	locationText := gridAndLocation
-	vehicleAndIncident := ""
-	if vehicleLoc != nil {
-		locationText = strings.TrimSpace(gridAndLocation[:vehicleLoc[0]])
-		vehicleAndIncident = strings.TrimSpace(gridAndLocation[vehicleLoc[0]:])
-	}
-
 	gridCode := ""
-	if match := gridCodeRegex.FindStringSubmatch(locationText); len(match) == 3 {
+	if match := gridCodeRegex.FindStringSubmatch(gridAndLocation); len(match) == 3 {
 		gridCode = match[1]
-		locationText = strings.TrimSpace(match[2])
+		gridAndLocation = strings.TrimSpace(match[2])
 	}
-
-	vehicleText := vehicleAndIncident
+	locationText, units := splitTrailingVehicleTokens(gridAndLocation)
+	vehicleText := strings.Join(units, " ")
 	incidentText := ""
-	if hash := strings.Index(vehicleAndIncident, "#"); hash >= 0 {
-		vehicleText = strings.TrimSpace(vehicleAndIncident[:hash])
-		incidentText = strings.TrimSpace(vehicleAndIncident[hash:])
+	if hash := strings.Index(gridAndLocation, "#"); hash >= 0 {
+		incidentText = strings.TrimSpace(gridAndLocation[hash:])
 	}
 
 	callType := strings.TrimSpace(payload[:timeLoc[0]])
@@ -225,35 +223,32 @@ func extractNearestIntersection(text string) string {
 			end = idx
 		}
 	}
-	if loc := vehicleRegex.FindStringIndex(value); loc != nil && loc[0] < end {
-		end = loc[0]
+	value = value[:end]
+	location, _ := splitTrailingVehicleTokens(value)
+	if alias := strings.Index(strings.ToLower(location), "alias:"); alias >= 0 {
+		location = location[:alias]
 	}
-	return strings.TrimSpace(strings.TrimRight(value[:end], "/ "))
+	return strings.TrimSpace(strings.TrimRight(location, "/ "))
 }
 
 func extractVehicles(parts []string) []string {
-	if len(parts) < 2 {
-		return nil
+	_, units := splitTrailingVehicleTokens(strings.Join(parts, " "))
+	return units
+}
+
+// splitTrailingVehicleTokens extracts the consecutive unit designators just
+// before the incident marker. Unlike a fixed prefix list, this handles new
+// unit families without mistaking street names and bare civic numbers for units.
+func splitTrailingVehicleTokens(text string) (string, []string) {
+	if hash := strings.Index(text, "#"); hash >= 0 {
+		text = text[:hash]
 	}
-
-	last := parts[len(parts)-2]
-	var segments []string
-
-	if len(parts) >= 3 {
-		prev := parts[len(parts)-3]
-		if isVehicleLine(prev) {
-			segments = append(segments, prev)
-		}
+	fields := strings.Fields(text)
+	firstUnit := len(fields)
+	for firstUnit > 0 && unitTokenRegex.MatchString(fields[firstUnit-1]) {
+		firstUnit--
 	}
-
-	idx := strings.Index(last, "#")
-	if idx != -1 {
-		segments = append(segments, strings.TrimSpace(last[:idx]))
-	} else {
-		segments = append(segments, strings.TrimSpace(last))
-	}
-
-	return strings.Fields(strings.Join(segments, " "))
+	return strings.Join(fields[:firstUnit], " "), fields[firstUnit:]
 }
 
 func extractStations(vehicles []string) []string {
@@ -274,17 +269,11 @@ func extractStations(vehicles []string) []string {
 
 func getStationFromVehicle(v string) string {
 	v = strings.ToUpper(strings.TrimSpace(v))
-	v = strings.TrimRightFunc(v, func(r rune) bool {
-		return r < '0' || r > '9'
-	})
-
-	// Remove prefixes
-	for _, vt := range vehicleTypes {
-		if strings.HasPrefix(v, vt) {
-			v = strings.TrimPrefix(v, vt)
-			break
-		}
+	if !unitTokenRegex.MatchString(v) {
+		return ""
 	}
+	v = unitPrefixRegex.ReplaceAllString(v, "")
+	v = strings.TrimRightFunc(v, func(r rune) bool { return r < '0' || r > '9' })
 
 	if _, err := strconv.Atoi(v); err != nil {
 		return ""
