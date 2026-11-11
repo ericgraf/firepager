@@ -140,8 +140,16 @@ func main() {
 		incident_number=$4, vehicles=$5, stations=$6, address=$7, intersection=$8,
 		dv=$9, sec=$10, gd=$11, alias=$12 WHERE id=$13`
 	for _, r := range updates {
+		vehicles := r.parsed.Vehicles
+		if vehicles == nil {
+			vehicles = []string{}
+		}
+		stations := r.parsed.Stations
+		if stations == nil {
+			stations = []string{}
+		}
 		if _, err := tx.Exec(updateSQL, r.parsed.Type, r.parsed.PageID, r.parsed.CallType,
-			r.parsed.IncidentNumber, pq.Array(r.parsed.Vehicles), pq.Array(r.parsed.Stations),
+			r.parsed.IncidentNumber, pq.Array(vehicles), pq.Array(stations),
 			r.parsed.Address, r.parsed.Intersection, r.parsed.DV, r.parsed.Section,
 			r.parsed.Grid, r.parsed.Alias, r.id); err != nil {
 			log.Fatal(err)
